@@ -267,6 +267,7 @@ class AlarmReceiver : BroadcastReceiver() {
                     a == "guard" -> Engine.guardCheck(c)
                     a == "clean" -> {
                         Engine.dailyClean(c)
+                        if (Cfg.mineAuto) try { MyApps.autoUpdate(c) } catch (e: Exception) {}
                         // listy blokowania odświeżane co tydzień
                         if (Cfg.monitor && System.currentTimeMillis() - Cfg.listsAt > 7 * 86_400_000L) try { Dns.updateLists(c) { } } catch (e: Exception) {}
                         // bazy sygnatur antywirusa – co 3 dni
@@ -332,8 +333,8 @@ object Updater {
         return c
     }
 
-    fun check(token: String): Info? {
-        val c = open("https://api.github.com/repos/$REPO/releases/latest", token, "application/vnd.github+json")
+    fun check(token: String, repo: String = REPO): Info? {
+        val c = open("https://api.github.com/repos/$repo/releases/latest", token, "application/vnd.github+json")
         val code = c.responseCode
         if (code == 401) throw IOException("Token jest nieprawidłowy albo wygasł")
         if (code == 404) throw IOException("Nie znaleziono wydań – zbuduj aplikację na GitHubie")

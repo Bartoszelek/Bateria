@@ -232,3 +232,60 @@ object Tools {
         return Pair(n, bytes)
     }
 }
+
+
+/**
+ * Moje aplikacje: instalacja i aktualizacja wszystkich własnych aplikacji kanałem ADB (przez Shizuku).
+ * Taka instalacja nie pokazuje okna instalatora ani ostrzeżenia Play Protect i – według zasad Google –
+ * jest wyłączona z wymogu weryfikacji dewelopera, więc będzie działać także po zmianach w 2027 r.
+ */
+object MyApps {
+    class A(val name: String, val pkg: String, val repo: String)
+
+    val LIST = listOf(
+        A("Bastion", "pl.bateria", "Bartoszelek/bateria"),
+        A("Audioteka", "pl.audioteka", "Bartoszelek/audioteka"),
+        A("Karty", "pl.karty", "Bartoszelek/karty"),
+        A("Notatnik", "pl.notatnik", "Bartoszelek/notatnik"),
+        A("Player", "pl.konwerter", "Bartoszelek/konwerter"),
+        A("Biuro", "pl.biuro", "Bartoszelek/biuro"),
+        A("E-ink Launcher", "pl.einklauncher", "Bartoszelek/einklauncher")
+    )
+
+    class State(val app: A, val installed: Long, val latest: Updater.Info?, val error: String)
+
+    fun installed(c: Context, pkg: String): Long = try { c.packageManager.getPackageInfo(pkg, 0).longVersionCode } catch (e: Exception) { -1L }
+
+    fun check(c: Context): List<State> = LIST.map { a ->
+        val inst = installed(c, a.pkg)
+        try { State(a, inst, Updater.check(Cfg.token, a.repo), "") } catch (e: Exception) { State(a, inst, null, e.message ?: "błąd") }
+    }
+
+    /** Pobiera i instaluje kanałem ADB. Zwraca opis wyniku. */
+    fun install(c: Context, st: State, progress: (String) -> Unit): String {
+        val info = st.latest ?: return "${st.app.name}: brak wydania"
+        if (!Sh.granted()) return "Potrzebne działające Shizuku"
+        val dir = c.getExternalFilesDir("apk") ?: return "Brak miejsca na pliki"
+        val f = File(dir, st.app.pkg + ".apk")
+        Updater.download(Cfg.token, info, f) { p -> progress("${st.app.name}: pobieram $p%") }
+        progress("${st.app.name}: instaluję…")
+        Sys.put(c, "global", "verifier_verify_adb_installs", "0")
+        val out = Sh.run("pm install -r -i ${c.packageName} \"${f.path}\"")
+        f.delete()
+        return if (out.contains("Success")) "${st.app.name}: zainstalowano 1.${info.number}"
+        else "${st.app.name}: " + out.lines().firstOrNull { it.contains("Failure") }.orEmpty().ifEmpty { "instalacja nieudana" }
+    }
+
+    /** W tle (raz dziennie): aktualizuje zainstalowane aplikacje, gdy jest nowsza wersja. */
+    fun autoUpdate(c: Context) {
+        if (!Sh.granted() || Cfg.token.isBlank()) return
+        val done = ArrayList<String>()
+        for (st in check(c)) {
+            val l = st.latest ?: continue
+            if (st.installed < 0 || l.number <= st.installed || st.app.pkg == c.packageName) continue
+            val r = install(c, st) { }
+            if (r.contains("zainstalowano")) done += r
+        }
+        if (done.isNotEmpty()) Alerts.plain(c, 7001, "Zaktualizowano ${done.size} aplikacji", done.joinToString("\n"))
+    }
+}

@@ -52,6 +52,7 @@ class MainActivity : Activity() {
     private var rankBusy = false
     private var rankErr = ""
     private var update: Updater.Info? = null
+    private var mine: List<MyApps.State>? = null
     private var updMsg = ""
     private var updStatus: TextView? = null
     private val ACTION_INSTALL = "pl.bateria.INSTALL_RESULT"
@@ -438,6 +439,42 @@ class MainActivity : Activity() {
         col.addView(bk, lp(top = 6))
         col.addView(tv("Kategorie aplikacji, blokady internetu, listy domen i wszystkie przełączniki – do przeniesienia na inny telefon.", 12f, color = DIM), lp(top = 6))
 
+        header("Moje aplikacje")
+        col.addView(tv("Instalacja i aktualizacje wszystkich Twoich aplikacji kanałem ADB (Shizuku): bez okna instalatora i bez ostrzeżeń Play Protect. Tę drogę Google zostawia otwartą także po zaostrzeniu zasad instalowania.", 12f, color = DIM), lp(top = 2))
+        val ms = mine
+        if (ms == null) {
+            col.addView(btn("Sprawdź moje aplikacje", true) {
+                if (Cfg.token.isBlank()) { toast("Najpierw wklej token GitHub niżej"); return@btn }
+                work("Sprawdzam…") { mine = MyApps.check(this); null }
+            }, lp(-2, -2, top = 8))
+        } else {
+            val todo = ms.filter { it.latest != null && it.latest.number > it.installed && it.app.pkg != packageName }
+            for (st in ms) {
+                val r = hbox().apply { setPadding(0, dp(8), 0, dp(8)) }
+                if (st.installed >= 0) r.addView(ImageView(this).apply { setImageDrawable(Apps.icon(this@MainActivity, st.app.pkg)) }, LinearLayout.LayoutParams(dp(32), dp(32)))
+                else r.addView(View(this), LinearLayout.LayoutParams(dp(32), dp(32)))
+                val l = vbox()
+                l.addView(tv(st.app.name, 15f, true))
+                l.addView(tv((if (st.installed >= 0) "zainstalowana 1.${st.installed}" else "niezainstalowana") +
+                    (st.latest?.let { " · najnowsza 1.${it.number}" } ?: if (st.error.isNotEmpty()) " · ${st.error.take(40)}" else ""), 12f, color = DIM))
+                r.addView(l, lp(0, -2, 1f).apply { leftMargin = dp(12) })
+                val lt = st.latest
+                when {
+                    lt == null -> {}
+                    st.installed < 0 -> r.addView(btn("Zainstaluj", true) { work("Instaluję…") { val x = MyApps.install(this, st) { }; mine = null; x } })
+                    lt.number > st.installed && st.app.pkg == packageName -> r.addView(btn("Aktualizuj", true) { installUpdate() })
+                    lt.number > st.installed -> r.addView(btn("Aktualizuj", true) { work("Aktualizuję…") { val x = MyApps.install(this, st) { }; mine = null; x } })
+                    else -> r.addView(tv("✓ aktualna", 13f, true, ACC))
+                }
+                col.addView(r)
+            }
+            if (todo.size > 1) col.addView(btn("Aktualizuj wszystkie (${todo.size})", true) {
+                work("Aktualizuję…") { val res = todo.map { MyApps.install(this, it) { } }; mine = null; res.joinToString("\n") }
+            }, lp(-2, -2, top = 8))
+            col.addView(btn("Sprawdź ponownie") { mine = null; render() }, lp(-2, -2, top = 8))
+        }
+        toggle("Aktualizuj moje aplikacje automatycznie", "Raz dziennie w tle, gdy działa Shizuku – z powiadomieniem, co zostało zaktualizowane.", Cfg.mineAuto) { Cfg.mineAuto = it; Cfg.save() }
+
         header("Aktualizacje")
         val ver = vbox().apply { setPadding(0, dp(10), 0, dp(4)) }
         val vr = hbox()
@@ -467,6 +504,7 @@ class MainActivity : Activity() {
             else col.addView(btn("Sprawdź aktualizacje") { checkUpdate(true) }, lp(-2, -2, top = 8))
         }
         col.addView(btn("Otwórz budowanie na GitHubie") { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/${Updater.REPO}/actions"))) }, lp(-2, -2, top = 8))
+        col.addView(tv("Gdy działa Shizuku, aktualizacja instaluje się sama, bez okna instalatora i bez ostrzeżenia Google Play Protect.", 12f, color = DIM), lp(top = 8))
         col.addView(tv("Bastion ${versionName()}", 12f, color = DIM).apply { gravity = Gravity.CENTER }, lp(top = 18))
     }
 
@@ -495,17 +533,30 @@ class MainActivity : Activity() {
 
     private fun installUpdate() {
         val info = update ?: return
-        if (!packageManager.canRequestPackageInstalls()) {
+        if (!Sh.granted() && !packageManager.canRequestPackageInstalls()) {
             toast("Zezwól Bastionowi na instalowanie aplikacji, potem wróć i stuknij ponownie")
             try { startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName"))) } catch (e: Exception) {}
             return
         }
         updMsg = "Pobieram… 0%"
         render()
-        val file = java.io.File(cacheDir, "update.apk")
+        val shell = Sh.granted()
+        // przez Shizuku instalacja idzie kanałem ADB – bez okna instalatora i bez ostrzeżenia Play Protect
+        val file = java.io.File(if (shell) (getExternalFilesDir(null) ?: cacheDir) else cacheDir, "update.apk")
         Thread {
             try {
                 Updater.download(Cfg.token, info, file) { pr -> h.post { updMsg = "Pobieram… $pr%"; updStatus?.text = updMsg } }
+                if (shell) {
+                    h.post { updMsg = "Instaluję…"; updStatus?.text = updMsg }
+                    Sys.put(this, "global", "verifier_verify_adb_installs", "0")
+                    val out = Sh.run("pm install -r \"${file.path}\"")
+                    if (!out.contains("Success")) {
+                        // kanał ADB zawiódł – zwykły instalator
+                        installApk(file)
+                        h.post { updMsg = "Potwierdź instalację"; updStatus?.text = updMsg }
+                    }
+                    return@Thread
+                }
                 installApk(file)
                 h.post { updMsg = "Potwierdź instalację"; updStatus?.text = updMsg }
             } catch (e: Exception) {

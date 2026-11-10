@@ -226,6 +226,7 @@ object Cfg {
     var avAt = 0L                                 // ostatni skan
     var smsGuard = true
     val locked = HashSet<String>()                // aplikacje wymagające odcisku
+    var mineAuto = true                           // aktualizuj moje aplikacje w tle
     val bootOff = HashSet<String>()               // autostart wyłączony
     val trackBlock = HashSet<String>()            // aplikacje z zablokowanymi trackerami (internet zostaje)
     val avTrust = HashSet<String>()               // „to fałszywy alarm” – zapamiętane
@@ -299,6 +300,7 @@ object Cfg {
             o.optJSONArray("quietApps")?.let { a -> for (i in 0 until a.length()) quietApps.add(a.getString(i)) }
             o.optJSONArray("notifWords")?.let { a -> for (i in 0 until a.length()) notifWords.add(a.getString(i)) }
             travel = o.optBoolean("travel"); clipClear = o.optBoolean("clipClear")
+            mineAuto = o.optBoolean("mineAuto", true)
             o.optJSONArray("bootOff")?.let { a -> for (i in 0 until a.length()) bootOff.add(a.getString(i)) }
             o.optJSONArray("trackBlock")?.let { a -> for (i in 0 until a.length()) trackBlock.add(a.getString(i)) }
             o.optJSONArray("avTrust")?.let { a -> for (i in 0 until a.length()) avTrust.add(a.getString(i)) }
@@ -338,7 +340,7 @@ object Cfg {
             .put("quietFrom", quietFrom).put("quietTo", quietTo).put("lastDigest", lastDigest).put("backupTree", backupTree).put("dlAuto", dlAuto)
             .put("bundleApps", JSONArray(bundleApps.toList())).put("quietApps", JSONArray(quietApps.toList())).put("notifWords", JSONArray(notifWords))
             .put("travel", travel).put("clipClear", clipClear).put("locked", JSONArray(locked.toList()))
-            .put("bootOff", JSONArray(bootOff.toList())).put("trackBlock", JSONArray(trackBlock.toList())).put("avTrust", JSONArray(avTrust.toList()))
+            .put("mineAuto", mineAuto).put("bootOff", JSONArray(bootOff.toList())).put("trackBlock", JSONArray(trackBlock.toList())).put("avTrust", JSONArray(avTrust.toList()))
             .put("sigAt", sigAt).put("avAt", avAt).put("smsGuard", smsGuard).put("wifiGuard", wifiGuard)
             .put("antiTheft", antiTheft).put("theftTries", theftTries).put("theftSiren", theftSiren).put("avRealtime", avRealtime).put("listsAt", listsAt)
             .put("btAuto", btAuto).put("wifiAuto", wifiAuto)
