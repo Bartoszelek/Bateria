@@ -16,19 +16,21 @@ import java.util.Calendar
 
 object Engine {
     // ------------------------------------------------------------ ustawienia systemu
-    private fun get(ns: String, k: String) = Sh.run("settings get $ns $k").trim()
+    lateinit var app: Context
+
+    fun init(c: Context) { if (!::app.isInitialized) app = c.applicationContext }
 
     /** Zmienia ustawienie, zapamiętując poprzednią wartość (do przywrócenia). */
     private fun setRemember(ns: String, k: String, v: String) {
         val key = "$ns/$k"
-        if (!Cfg.prev.containsKey(key)) Cfg.prev[key] = get(ns, k)
-        Sh.run("settings put $ns $k $v")
+        if (!Cfg.prev.containsKey(key)) Cfg.prev[key] = Sys.get(app, ns, k)
+        Sys.put(app, ns, k, v)
     }
 
     private fun restore(ns: String, k: String) {
         val key = "$ns/$k"
         val old = Cfg.prev.remove(key) ?: return
-        if (old.isBlank() || old == "null") Sh.run("settings delete $ns $k") else Sh.run("settings put $ns $k $old")
+        Sys.put(app, ns, k, if (old.isBlank() || old == "null") null else old)
     }
 
     fun applyHz(on: Boolean) {
@@ -66,7 +68,7 @@ object Engine {
         }
     }
 
-    fun saver(on: Boolean) = Sh.run("settings put global low_power ${if (on) 1 else 0}")
+    fun saver(on: Boolean) = Sys.put(app, "global", "low_power", if (on) "1" else "0")
 
     fun saverOn(c: Context) = android.provider.Settings.Global.getInt(c.contentResolver, "low_power", 0) == 1
 
@@ -101,22 +103,46 @@ object Engine {
     }
 
     /** Zmiana kategorii: cofnij skutki starej, nałóż stałe skutki nowej. */
+    /** Polecenia przejścia aplikacji z jednej kategorii do drugiej. */
+    private fun transition(p: String, old: String, cat: String): List<String> {
+        val cmds = ArrayList<String>()
+        if (old == cat) return cmds
+        if ((old == Cat.BG || old == Cat.OFF) && cat != Cat.BG) cmds += listOf("cmd appops set $p RUN_ANY_IN_BACKGROUND default", "cmd appops set $p RUN_IN_BACKGROUND default",
+            "cmd appops set $p WAKE_LOCK default", "am set-standby-bucket $p active")
+        if ((old == Cat.FZP || old == Cat.FZ1 || old == Cat.FZ2) && cat != Cat.FZP) cmds += "pm enable $p"
+        if (cat == Cat.BG) cmds += listOf("cmd appops set $p RUN_ANY_IN_BACKGROUND ignore", "cmd appops set $p RUN_IN_BACKGROUND ignore",
+            "cmd appops set $p WAKE_LOCK ignore", "am set-standby-bucket $p restricted")
+        if (cat == Cat.FZP) cmds += "pm disable-user --user 0 $p"
+        return cmds
+    }
+
+    /**
+     * Zmiana kategorii. Bez Shizuku zmiana zapisuje się od razu, a polecenia systemowe
+     * czekają w kolejce i wykonają się, gdy Shizuku znów zadziała.
+     */
     fun setCat(c: Context, pkgs: Collection<String>, cat: String, byAuto: Boolean = false) {
         val cmds = ArrayList<String>()
+        val live = Sh.granted()
         for (p in pkgs) {
             val old = Cfg.cat(p)
             if (old == cat) continue
-            if (old == Cat.BG || old == Cat.OFF) cmds += listOf("cmd appops set $p RUN_ANY_IN_BACKGROUND default", "cmd appops set $p RUN_IN_BACKGROUND default",
-                "cmd appops set $p WAKE_LOCK default", "am set-standby-bucket $p active")
-            if (old == Cat.FZP || old == Cat.FZ1 || old == Cat.FZ2) cmds += "pm enable $p"
-            if (cat == Cat.BG) cmds += listOf("cmd appops set $p RUN_ANY_IN_BACKGROUND ignore", "cmd appops set $p RUN_IN_BACKGROUND ignore",
-                "cmd appops set $p WAKE_LOCK ignore", "am set-standby-bucket $p restricted")
-            if (cat == Cat.FZP) cmds += "pm disable-user --user 0 $p"
+            if (live) cmds += transition(p, old, cat)
+            else if (!Cfg.pendingFrom.containsKey(p)) Cfg.pendingFrom[p] = old
             if (cat == Cat.NORMAL) Cfg.cats.remove(p) else Cfg.cats[p] = cat
             if (byAuto) Cfg.auto.add(p) else Cfg.auto.remove(p)
         }
         // w paczkach, żeby nie przekroczyć długości polecenia
         cmds.chunked(40).forEach { Sh.runAll(it) }
+        Cfg.save()
+    }
+
+    /** Wykonuje zaległe zmiany po powrocie Shizuku. */
+    fun applyPending() {
+        if (!Sh.granted() || Cfg.pendingFrom.isEmpty()) return
+        val cmds = ArrayList<String>()
+        for ((p, old) in Cfg.pendingFrom.toMap()) cmds += transition(p, old, Cfg.cat(p))
+        cmds.chunked(40).forEach { Sh.runAll(it) }
+        Cfg.pendingFrom.clear()
         Cfg.save()
     }
 
@@ -128,7 +154,6 @@ object Engine {
 
     // ------------------------------------------------------------ ekran wygaszony / włączony
     private val appliedOff = HashSet<String>()
-    private val frozenNow = HashSet<String>()
 
     private fun pi(c: Context, action: String, code: Int) = PendingIntent.getBroadcast(c, code,
         Intent(c, AlarmReceiver::class.java).setAction(action), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
@@ -159,7 +184,10 @@ object Engine {
         val list = pkgs(cat)
         when (cat) {
             Cat.OFF -> { list.forEach { restrict(it, true) }; appliedOff.addAll(list) }
-            Cat.FZ1, Cat.FZ2 -> { Sh.runAll(list.map { "pm disable-user --user 0 $it" }); frozenNow.addAll(list) }
+            Cat.FZ1, Cat.FZ2 -> {
+                if (!Sh.granted()) return  // bez Shizuku nie zamrażamy – nie dałoby się odmrozić
+                Sh.runAll(list.map { "pm disable-user --user 0 $it" }); Cfg.frozenNow.addAll(list); Cfg.save()
+            }
         }
     }
 
@@ -168,10 +196,10 @@ object Engine {
         cancel(c, "doze", 64); cancel(c, "guard", 65)
         val cmds = ArrayList<String>()
         // najpierw odmrażanie – żeby ikony były od razu
-        val fz = frozenNow.toList() + pkgs(Cat.FZ1) + pkgs(Cat.FZ2)
+        val fz = Cfg.frozenNow.toList() + pkgs(Cat.FZ1) + pkgs(Cat.FZ2)
         val pm = c.packageManager
         fz.distinct().filter { Apps.frozen(pm, it) }.forEach { cmds += "pm enable $it" }
-        frozenNow.clear()
+        if (Sh.granted()) { Cfg.frozenNow.clear(); Cfg.save() }
         if (Cfg.deepDoze) cmds += "dumpsys deviceidle unforce"
         for (p in (appliedOff + pkgs(Cat.OFF)).distinct()) cmds += listOf("cmd appops set $p RUN_ANY_IN_BACKGROUND default", "cmd appops set $p RUN_IN_BACKGROUND default",
             "cmd appops set $p WAKE_LOCK default", "am set-standby-bucket $p active")
@@ -222,7 +250,6 @@ object Engine {
     fun autoByUsage(c: Context, force: Boolean = false) {
         if (!Cfg.autoUsage && !force) return
         if (!force && System.currentTimeMillis() - Cfg.lastAuto < 12 * 3600_000L) return
-        Sh.run("appops set ${c.packageName} GET_USAGE_STATS allow")
         val use = Apps.usage(c)
         if (use.isEmpty()) return
         val now = System.currentTimeMillis()
@@ -251,7 +278,7 @@ object Engine {
     class Use(val pkg: String, val label: String, val mah: Double, val bg: Double, val fgMin: Long)
 
     fun ranking(c: Context): List<Use> {
-        val txt = Sh.run("dumpsys batterystats --charged")
+        val txt = Sys.dump(c, "batterystats --charged")
         val pm = c.packageManager
         val map = HashMap<String, DoubleArray>()
         val rx = Regex("""^\s*UID (u\d+a\d+|\d+):\s*([\d.]+)(.*)$""", RegexOption.MULTILINE)
@@ -277,7 +304,7 @@ object Engine {
 
     fun guardCheck(c: Context) {
         if (!Cfg.guard) return
-        val txt = Sh.run("dumpsys power")
+        val txt = Sys.dump(c, "power")
         val rx = Regex("""PARTIAL_WAKE_LOCK\s+'([^']*)'.*?ACQ=-([0-9hdms]+)\s.*?uid=(\d+)""")
         val pm = c.packageManager
         val skip = Apps.untouchable(c)

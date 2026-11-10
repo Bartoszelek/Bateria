@@ -21,6 +21,7 @@ import android.os.PowerManager
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
 import org.json.JSONObject
+import rikka.shizuku.Shizuku
 import java.io.File
 import java.io.FileInputStream
 import java.io.IOException
@@ -82,6 +83,11 @@ class BatteryService : Service() {
             addAction(Intent.ACTION_SCREEN_OFF); addAction(Intent.ACTION_SCREEN_ON); addAction(Intent.ACTION_BATTERY_CHANGED)
         })
         alive = true
+        try {
+            Shizuku.addBinderReceivedListenerSticky(onUp)
+            Shizuku.addBinderDeadListener(onDown)
+        } catch (e: Throwable) {}
+        h.postDelayed(watch, 60_000)
         Thread {
             Engine.reapply()
             Engine.scheduleNight(this)
@@ -89,10 +95,62 @@ class BatteryService : Service() {
         }.start()
     }
 
+    private val h = android.os.Handler(android.os.Looper.getMainLooper())
+
+    private val onUp = Shizuku.OnBinderReceivedListener { h.postDelayed({ shizukuUp() }, 1500) }
+    private val onDown = Shizuku.OnBinderDeadListener { h.post { shizukuDown() } }
+
+    /** Co 5 minut: czy Shizuku żyje (na wypadek, gdyby nie przyszło zdarzenie). */
+    private val watch = object : Runnable {
+        override fun run() {
+            if (Sh.granted()) { if (!Cfg.shizukuWasUp) shizukuUp() } else if (Cfg.shizukuWasUp) shizukuDown()
+            h.postDelayed(this, 5 * 60_000L)
+        }
+    }
+
+    private fun shizukuUp() {
+        if (!Sh.granted()) return
+        getSystemService(NotificationManager::class.java)?.cancel(2)
+        Cfg.shizukuWasUp = true
+        Cfg.save()
+        Thread {
+            Sys.grantAll(this)          // stałe uprawnienia – działają potem bez Shizuku
+            Engine.applyPending()       // zaległe zmiany kategorii
+            Engine.reapply()
+            if (getSystemService(PowerManager::class.java)?.isInteractive == true) Engine.onScreenOn(this) // odmroź, co zostało zamrożone
+        }.start()
+    }
+
+    private fun shizukuDown() {
+        if (!Cfg.shizukuWasUp) return
+        Cfg.shizukuWasUp = false
+        Cfg.drops.add(System.currentTimeMillis())
+        Cfg.save()
+        val nm = getSystemService(NotificationManager::class.java) ?: return
+        nm.createNotificationChannel(NotificationChannel("shizuku", "Shizuku", NotificationManager.IMPORTANCE_DEFAULT))
+        val launch = packageManager.getLaunchIntentForPackage("moe.shizuku.privileged.api") ?: Intent(this, MainActivity::class.java)
+        val frozen = Cfg.frozenNow.size
+        val text = "Połącz się z dowolnym Wi-Fi i stuknij, żeby uruchomić Shizuku. Oszczędzanie działa dalej, czekają tylko zamrażanie i zmiany kategorii." +
+            if (frozen > 0) " Zamrożone aplikacje ($frozen) odmrożą się po uruchomieniu." else ""
+        try {
+            nm.notify(2, Notification.Builder(this, "shizuku")
+                .setSmallIcon(Icon.createWithResource(this, R.drawable.ic_bolt))
+                .setContentTitle("Shizuku wyłączone")
+                .setContentText(text)
+                .setStyle(Notification.BigTextStyle().bigText(text))
+                .setContentIntent(PendingIntent.getActivity(this, 3, launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), PendingIntent.FLAG_IMMUTABLE))
+                .setAutoCancel(true)
+                .build())
+        } catch (e: SecurityException) {
+        }
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
 
     override fun onDestroy() {
         alive = false
+        h.removeCallbacks(watch)
+        try { Shizuku.removeBinderReceivedListener(onUp); Shizuku.removeBinderDeadListener(onDown) } catch (e: Throwable) {}
         try { unregisterReceiver(rx) } catch (e: Exception) {}
         super.onDestroy()
     }

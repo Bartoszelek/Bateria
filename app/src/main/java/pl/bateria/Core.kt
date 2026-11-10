@@ -39,6 +39,68 @@ object Sh {
     fun runAll(cmds: List<String>): String = if (cmds.isEmpty()) "" else run(cmds.joinToString(" ; "))
 }
 
+/**
+ * Stałe uprawnienia (nadawane raz przez Shizuku, działają po restarcie i bez Shizuku):
+ * zmiana ustawień systemu, odczyt statystyk baterii, statystyki użycia.
+ */
+object Sys {
+    fun canWrite(c: Context) = c.checkSelfPermission("android.permission.WRITE_SECURE_SETTINGS") == PackageManager.PERMISSION_GRANTED
+    fun canDump(c: Context) = c.checkSelfPermission("android.permission.DUMP") == PackageManager.PERMISSION_GRANTED
+
+    /** Nadaje stałe uprawnienia (gdy Shizuku działa). */
+    fun grantAll(c: Context) {
+        if (!Sh.granted()) return
+        val p = c.packageName
+        Sh.runAll(listOf(
+            "pm grant $p android.permission.WRITE_SECURE_SETTINGS",
+            "pm grant $p android.permission.DUMP",
+            "appops set $p GET_USAGE_STATS allow",
+            "appops set $p WRITE_SETTINGS allow",
+            "dumpsys deviceidle whitelist +$p"
+        ))
+    }
+
+    fun get(c: Context, ns: String, k: String): String = try {
+        when (ns) {
+            "global" -> android.provider.Settings.Global.getString(c.contentResolver, k)
+            "secure" -> android.provider.Settings.Secure.getString(c.contentResolver, k)
+            else -> android.provider.Settings.System.getString(c.contentResolver, k)
+        } ?: "null"
+    } catch (e: Exception) {
+        Sh.run("settings get $ns $k").trim()
+    }
+
+    /** Zapis ustawienia: bezpośrednio (stałe uprawnienie), a gdy się nie da – przez Shizuku. */
+    fun put(c: Context, ns: String, k: String, v: String?): Boolean {
+        if (canWrite(c)) try {
+            val cr = c.contentResolver
+            val ok = when (ns) {
+                "global" -> android.provider.Settings.Global.putString(cr, k, v)
+                "secure" -> android.provider.Settings.Secure.putString(cr, k, v)
+                else -> android.provider.Settings.System.putString(cr, k, v)
+            }
+            if (ok) return true
+        } catch (e: Exception) {
+        }
+        if (!Sh.granted()) return false
+        Sh.run(if (v == null) "settings delete $ns $k" else "settings put $ns $k $v")
+        return true
+    }
+
+    /** dumpsys: przez Shizuku albo własnym uprawnieniem DUMP. */
+    fun dump(c: Context, args: String): String {
+        if (Sh.granted()) return Sh.run("dumpsys $args")
+        if (!canDump(c)) return ""
+        return try {
+            val pr = Runtime.getRuntime().exec(arrayOf("sh", "-c", "dumpsys $args"))
+            val out = pr.inputStream.bufferedReader().readText()
+            pr.waitFor(); out
+        } catch (e: Exception) {
+            ""
+        }
+    }
+}
+
 /** Kategorie aplikacji. */
 object Cat {
     const val PROTECT = "protect"
@@ -104,8 +166,13 @@ object Cfg {
     var weekendSaver = false
     var token = ""
     var lastAuto = 0L
+    val pendingFrom = HashMap<String, String>()   // zmiany kategorii czekające na Shizuku: pakiet → poprzednia kategoria
+    val frozenNow = HashSet<String>()             // zamrożone po wygaszeniu (do odmrożenia)
+    val drops = ArrayList<Long>()                 // kiedy Shizuku się wyłączało
+    var shizukuWasUp = false
 
     fun init(c: Context) {
+        Engine.init(c)
         if (loaded) return
         f = File(c.filesDir, "cfg.json")
         loaded = true
@@ -123,6 +190,10 @@ object Cfg {
             night = o.optBoolean("night"); nightFrom = o.optInt("nightFrom", 23); nightTo = o.optInt("nightTo", 6)
             nightData = o.optBoolean("nightData", true); nightSync = o.optBoolean("nightSync", true); nightSaver = o.optBoolean("nightSaver", true)
             weekendSaver = o.optBoolean("weekendSaver"); token = o.optString("token"); lastAuto = o.optLong("lastAuto")
+            o.optJSONObject("pendingFrom")?.let { j -> for (k in j.keys()) pendingFrom[k] = j.optString(k) }
+            o.optJSONArray("frozenNow")?.let { a -> for (i in 0 until a.length()) frozenNow.add(a.getString(i)) }
+            o.optJSONArray("drops")?.let { a -> for (i in 0 until a.length()) drops.add(a.getLong(i)) }
+            shizukuWasUp = o.optBoolean("shizukuWasUp")
         } catch (e: Exception) {
             defaults(c)
         }
@@ -141,6 +212,8 @@ object Cfg {
             .put("night", night).put("nightFrom", nightFrom).put("nightTo", nightTo).put("nightData", nightData)
             .put("nightSync", nightSync).put("nightSaver", nightSaver).put("weekendSaver", weekendSaver)
             .put("token", token).put("lastAuto", lastAuto)
+            .put("pendingFrom", JSONObject(pendingFrom as Map<*, *>)).put("frozenNow", JSONArray(frozenNow.toList()))
+            .put("drops", JSONArray(drops.filter { it > System.currentTimeMillis() - 7 * 86_400_000L })).put("shizukuWasUp", shizukuWasUp)
         val tmp = File(f.path + ".tmp")
         tmp.writeText(o.toString())
         tmp.renameTo(f)

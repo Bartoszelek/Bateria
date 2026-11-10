@@ -96,8 +96,9 @@ class MainActivity : Activity() {
     private fun onShizukuReady() {
         if (!Sh.granted()) return
         Thread {
-            Sh.run("appops set $packageName GET_USAGE_STATS allow")
-            Sh.run("dumpsys deviceidle whitelist +$packageName")
+            Sys.grantAll(this)
+            Engine.applyPending()
+            h.post { render() }
         }.start()
         BatteryService.start(this)
         render()
@@ -174,6 +175,9 @@ class MainActivity : Activity() {
         }.start()
     }
 
+    /** Ustawienia systemu: wystarczy stałe uprawnienie albo Shizuku. */
+    private fun needWrite(): Boolean = if (Sys.canWrite(this) || Sh.granted()) false else needShizuku()
+
     private fun needShizuku(): Boolean {
         if (Sh.granted()) return false
         toast(if (Sh.running()) "Zezwól Baterii w Shizuku" else "Uruchom Shizuku")
@@ -224,8 +228,20 @@ class MainActivity : Activity() {
         val chg = bm?.isCharging == true
         row("Bateria: $lvl%", (if (chg) "Ładowanie" else "Na baterii") + if (Engine.saverOn(this)) " · oszczędzanie energii włączone" else "", null)
         col.addView(line(), lp(-1, 1))
-        row(if (Sh.granted()) "Shizuku: aktywne" else if (Sh.running()) "Shizuku: stuknij, aby zezwolić" else "Shizuku: nie działa",
-            if (Sh.granted()) "Potrzebne do ograniczania, zamrażania i ustawień systemu" else "Uruchom Shizuku i stuknij tutaj") { if (!Sh.granted()) Sh.request() }
+        val drops = Cfg.drops.count { it > System.currentTimeMillis() - 86_400_000L }
+        row(if (Sh.granted()) "Shizuku: aktywne" else if (Sh.running()) "Shizuku: stuknij, aby zezwolić" else "Shizuku: wyłączone",
+            (if (Sh.granted()) "Zamrażanie, głęboki sen i zmiany kategorii działają na bieżąco."
+            else "Działa dalej: ograniczenia w tle, zamrożone na stałe, 60 Hz, AOD, skanowanie, ranking i strażnik. Czeka: zamrażanie po wygaszeniu, głęboki sen" +
+                (if (Cfg.pendingFrom.isNotEmpty()) " i ${Cfg.pendingFrom.size} zmian kategorii" else "") + ". Połącz się z dowolnym Wi-Fi i uruchom Shizuku.") +
+                (if (drops > 0) "\nWyłączenia w ostatnich 24 h: $drops" else "")) {
+            if (Sh.granted()) return@row
+            if (Sh.running()) Sh.request() else packageManager.getLaunchIntentForPackage("moe.shizuku.privileged.api")?.let { startActivity(it) } ?: toast("Zainstaluj Shizuku")
+        }
+        col.addView(line(), lp(-1, 1))
+        val perm = Sys.canWrite(this) && Sys.canDump(this)
+        row(if (perm) "Stałe uprawnienia: nadane" else "Stałe uprawnienia: brak",
+            if (perm) "Ustawienia, ranking i strażnik działają także bez Shizuku – po restarcie i zmianie Wi-Fi."
+            else "Nadadzą się same przy pierwszym działaniu Shizuku.") { if (!perm && Sh.granted()) work("Nadaję…") { Sys.grantAll(this); null } }
         if (Sh.granted() && !BatteryService.alive) BatteryService.start(this)
 
         header("Szybko")
@@ -237,19 +253,19 @@ class MainActivity : Activity() {
 
         header("Ekran")
         toggle("60 Hz", "Płynność 120 Hz zużywa sporo prądu. Wyłączenie przywraca poprzednie ustawienie.", Cfg.hz60) {
-            if (needShizuku()) return@toggle; Cfg.hz60 = it; work(null) { Engine.applyHz(it); Cfg.save(); null }
+            if (needWrite()) return@toggle; Cfg.hz60 = it; work(null) { Engine.applyHz(it); Cfg.save(); null }
         }
         toggle("Ciemne wszystkie aplikacje", "Ciemny tryb systemu + wymuszona ciemność aplikacji bez własnego trybu ciemnego", Cfg.dark) {
             if (needShizuku()) return@toggle; Cfg.dark = it; work(null) { Engine.applyDark(it); Cfg.save(); null }
         }
         toggle("Wyłącz Always On Display", "Zegar na wygaszonym ekranie stale zużywa prąd", Cfg.aodOff) {
-            if (needShizuku()) return@toggle; Cfg.aodOff = it; work(null) { Engine.applyAod(it); Cfg.save(); null }
+            if (needWrite()) return@toggle; Cfg.aodOff = it; work(null) { Engine.applyAod(it); Cfg.save(); null }
         }
         col.addView(tv("Najwięcej daje czerń: na ekranie AMOLED czarny piksel jest wyłączony.", 12f, color = DIM), lp(top = 6))
 
         header("W tle")
         toggle("Skanowanie Wi-Fi i Bluetooth w tle", "Wyłącza szukanie sieci i urządzeń przy wyłączonym Wi-Fi i Bluetooth", Cfg.scanOff) {
-            if (needShizuku()) return@toggle; Cfg.scanOff = it; work(null) { Engine.applyScan(it); Cfg.save(); null }
+            if (needWrite()) return@toggle; Cfg.scanOff = it; work(null) { Engine.applyScan(it); Cfg.save(); null }
         }
         toggle("Głęboki sen po wygaszeniu", "Minutę po wygaszeniu telefon przechodzi w najgłębsze uśpienie (Doze) zamiast czekać ok. godziny. Połączenia i budziki działają, wiadomości mogą przyjść z opóźnieniem.", Cfg.deepDoze) {
             Cfg.deepDoze = it; Cfg.save()
@@ -505,12 +521,13 @@ class MainActivity : Activity() {
 
     private fun move(pk: List<String>, cat: String) {
         if (pk.isEmpty()) return
-        if (needShizuku()) return
         sel.clear()
         selMode = false
+        val live = Sh.granted()
         work(if (pk.size > 1) "Przenoszę ${pk.size} aplikacji…" else null) {
             Engine.setCat(this, pk, cat)
-            "→ " + Cat.name(cat)
+            if (live) "→ " + Cat.name(cat) + (if (pk.size > 1) " (${pk.size})" else "")
+            else "Zapisane – zadziała, gdy uruchomisz Shizuku"
         }
     }
 
@@ -551,7 +568,7 @@ class MainActivity : Activity() {
         val rk = ranking
         if (rk == null) {
             col.addView(btn("Policz", true) {
-                if (needShizuku()) return@btn
+                if (!Sys.canDump(this) && needShizuku()) return@btn
                 work("Liczę…") { ranking = Engine.ranking(this); null }
             }, lp(-2, -2, top = 6))
         } else {
