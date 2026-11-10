@@ -45,6 +45,8 @@ class MainActivity : Activity() {
     private var withSystem = false
     private var query = ""
     private val sel = LinkedHashSet<String>()
+    private var selMode = false
+    private lateinit var actionBar: LinearLayout
     private var ranking: List<Engine.Use>? = null
 
     private val BG = 0xFF101010.toInt()
@@ -67,6 +69,11 @@ class MainActivity : Activity() {
         col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(16), dp(20), dp(40)) }
         sv.addView(col)
         root.addView(sv, LinearLayout.LayoutParams(-1, 0, 1f))
+        actionBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            setBackgroundColor(0xFF233323.toInt()); setPadding(dp(16), dp(10), dp(12), dp(10)); visibility = View.GONE
+        }
+        root.addView(actionBar, LinearLayout.LayoutParams(-1, -2))
         root.addView(tabBar())
         setContentView(root)
         try { Shizuku.addRequestPermissionResultListener(permListener) } catch (e: Throwable) {}
@@ -191,7 +198,7 @@ class MainActivity : Activity() {
                 gravity = Gravity.CENTER
                 background = if (on) round(FG, 18) else null
                 setPadding(0, dp(10), 0, dp(10))
-                setOnClickListener { tab = k; sel.clear(); render(); sv.scrollTo(0, 0) }
+                setOnClickListener { tab = k; sel.clear(); selMode = false; render(); sv.scrollTo(0, 0) }
             }, lp(0, -2, 1f).apply { leftMargin = dp(4); rightMargin = dp(4) })
         }
     }
@@ -200,6 +207,7 @@ class MainActivity : Activity() {
         val y = sv.scrollY
         col.removeAllViews()
         drawTabs()
+        drawActionBar()
         when (tab) {
             "apps" -> renderApps()
             "use" -> renderUse()
@@ -379,7 +387,8 @@ class MainActivity : Activity() {
 
     private fun renderApps() {
         col.addView(tv("Aplikacje", 34f, true))
-        col.addView(tv("Przytrzymaj aplikację i przeciągnij ją do innej kategorii. Stuknij kilka, żeby zaznaczyć je razem – potem przeciągnij dowolną z nich albo użyj „Przenieś”.", 13f, color = DIM), lp(top = 6))
+        col.addView(tv(if (selMode) "Stukaj aplikacje, żeby je zaznaczyć. Potem „Przenieś do…” na dole – albo przytrzymaj dowolną zaznaczoną i przeciągnij do kategorii."
+            else "Stuknij aplikację, żeby zmienić jej kategorię. „Zaznacz kilka” – żeby przenieść wiele naraz. Możesz też przytrzymać i przeciągnąć.", 13f, color = DIM), lp(top = 6))
         if (!Sh.granted()) col.addView(tv("⚠ Shizuku nie jest aktywne – zmiany nie zadziałają.", 13f, true, WARN), lp(top = 8))
         val search = EditText(this).apply {
             setText(query); hint = "Szukaj aplikacji"; setTextColor(FG); setHintTextColor(DIM); textSize = 15f
@@ -395,10 +404,12 @@ class MainActivity : Activity() {
         r.addView(tv(if (withSystem) "☑ Pokaż systemowe" else "☐ Pokaż systemowe", 14f, color = DIM).apply {
             setPadding(0, dp(10), dp(16), dp(10)); setOnClickListener { withSystem = !withSystem; apps = emptyList(); loadApps(); render() }
         })
-        if (sel.isNotEmpty()) {
-            r.addView(btn("Przenieś (${sel.size})", true) { moveSheet(sel.toList()) }, lp(-2, -2).apply { rightMargin = dp(8) })
-            r.addView(btn("✕") { sel.clear(); render() })
-        }
+        r.addView(View(this), lp(0, 1, 1f))
+        r.addView(btn(if (selMode) "Gotowe" else "☑ Zaznacz kilka", selMode) {
+            selMode = !selMode
+            if (!selMode) sel.clear()
+            render()
+        })
         col.addView(r, lp(top = 4))
         if (apps.isEmpty()) {
             col.addView(tv("Wczytuję aplikacje…", 14f, color = DIM), lp(top = 20)); loadApps(); return
@@ -416,6 +427,13 @@ class MainActivity : Activity() {
             })
             sec.addView(head)
             sec.addView(tv(Cat.hint(cat), 12f, color = DIM), lp(top = 2))
+            if (selMode && list.isNotEmpty()) {
+                val all = list.all { it.pkg in sel }
+                sec.addView(tv(if (all) "☑ Odznacz wszystkie w tej kategorii" else "☐ Zaznacz wszystkie w tej kategorii", 14f, true, ACC).apply {
+                    setPadding(0, dp(8), 0, dp(4))
+                    setOnClickListener { if (all) list.forEach { sel.remove(it.pkg) } else list.forEach { sel.add(it.pkg) }; render() }
+                })
+            }
             if (list.isEmpty()) sec.addView(tv("Upuść tutaj", 13f, color = LINE).apply { gravity = Gravity.CENTER; setPadding(0, dp(14), 0, dp(10)) })
             for (a in list) sec.addView(appRow(a, cat, pm))
             dropTarget(sec, cat)
@@ -429,6 +447,7 @@ class MainActivity : Activity() {
         val r = hbox().apply { setPadding(dp(6), dp(8), dp(6), dp(8)) }
         val on = a.pkg in sel
         if (on) r.background = round(0xFF2E3B2E.toInt(), 12, 1, ACC)
+        if (selMode) r.addView(tv(if (on) "☑" else "☐", 22f, true, if (on) ACC else DIM).apply { setPadding(0, 0, dp(10), 0) })
         val iv = ImageView(this).apply { setImageDrawable(Apps.icon(this@MainActivity, a.pkg)) }
         r.addView(iv, LinearLayout.LayoutParams(dp(36), dp(36)))
         val l = vbox()
@@ -447,7 +466,8 @@ class MainActivity : Activity() {
             }
         })
         r.setOnClickListener {
-            if (sel.isEmpty()) moveSheet(listOf(a.pkg)) else { if (!sel.add(a.pkg)) sel.remove(a.pkg); render() }
+            if (selMode || sel.isNotEmpty()) { if (!sel.add(a.pkg)) sel.remove(a.pkg); selMode = true; render() }
+            else moveSheet(listOf(a.pkg))
         }
         r.setOnLongClickListener { v ->
             if (a.pkg !in sel) sel.add(a.pkg)
@@ -487,6 +507,7 @@ class MainActivity : Activity() {
         if (pk.isEmpty()) return
         if (needShizuku()) return
         sel.clear()
+        selMode = false
         work(if (pk.size > 1) "Przenoszę ${pk.size} aplikacji…" else null) {
             Engine.setCat(this, pk, cat)
             "→ " + Cat.name(cat)
@@ -496,7 +517,7 @@ class MainActivity : Activity() {
     private fun moveSheet(pk: List<String>) {
         sheet(if (pk.size == 1) (apps.firstOrNull { it.pkg == pk[0] }?.label ?: pk[0]) else "Przenieś ${pk.size} aplikacji") { c, d ->
             if (pk.size == 1) {
-                c.addView(btn("Zaznacz (żeby przenieść kilka naraz)") { d.dismiss(); sel.add(pk[0]); render() }, lp(top = 10))
+                c.addView(btn("☑ Zaznacz kilka (od tej aplikacji)") { d.dismiss(); sel.add(pk[0]); selMode = true; render() }, lp(top = 10))
             }
             for (cat in Cat.ALL) {
                 val cur = pk.size == 1 && Cfg.cat(pk[0]) == cat
@@ -577,6 +598,16 @@ class MainActivity : Activity() {
         @Suppress("DEPRECATION")
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == 5 && resultCode != RESULT_OK) { Cfg.netBlock = false; Cfg.save(); render(); toast("Bez zgody na VPN blokada internetu nie działa") }
+    }
+
+    /** Pasek na dole przy zaznaczonych aplikacjach: przenieś do kategorii jednym stuknięciem. */
+    private fun drawActionBar() {
+        actionBar.removeAllViews()
+        if (tab != "apps" || sel.isEmpty()) { actionBar.visibility = View.GONE; return }
+        actionBar.visibility = View.VISIBLE
+        actionBar.addView(tv("Zaznaczono: ${sel.size}", 15f, true), lp(0, -2, 1f))
+        actionBar.addView(btn("Przenieś do…", true) { moveSheet(sel.toList()) }, lp(-2, -2).apply { rightMargin = dp(8) })
+        actionBar.addView(btn("✕") { sel.clear(); render() })
     }
 }
 
