@@ -48,6 +48,10 @@ class MainActivity : Activity() {
     private var selMode = false
     private lateinit var actionBar: LinearLayout
     private var ranking: List<Engine.Use>? = null
+    private var update: Updater.Info? = null
+    private var updMsg = ""
+    private var updStatus: TextView? = null
+    private val ACTION_INSTALL = "pl.bateria.INSTALL_RESULT"
 
     private val BG = 0xFF101010.toInt()
     private val SURF = 0xFF1C1C1E.toInt()
@@ -78,6 +82,8 @@ class MainActivity : Activity() {
         setContentView(root)
         try { Shizuku.addRequestPermissionResultListener(permListener) } catch (e: Throwable) {}
         if (!Sh.granted()) Sh.request() else onShizukuReady()
+        handleInstall(intent)
+        checkUpdate(false)
         if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
             requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 3)
         render()
@@ -86,6 +92,12 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         try { Shizuku.removeRequestPermissionResultListener(permListener) } catch (e: Throwable) {}
         super.onDestroy()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleInstall(intent)
     }
 
     override fun onResume() {
@@ -223,6 +235,16 @@ class MainActivity : Activity() {
     // ------------------------------------------------------------ zakładka: oszczędzanie
     private fun renderSave() {
         col.addView(tv("Bateria", 34f, true))
+        val upd = update
+        if (upd != null) {
+            val box = hbox().apply { background = round(SURF, 18); setPadding(dp(16), dp(12), dp(12), dp(12)) }
+            val busyMsg = updMsg.startsWith("Pobieram") || updMsg.startsWith("Błąd") || updMsg.startsWith("Potwierdź")
+            val st = tv(if (busyMsg) updMsg else "Nowa wersja 1.${upd.number}", 15f, true)
+            updStatus = st
+            box.addView(st, lp(0, -2, 1f))
+            box.addView(btn("Zainstaluj", true) { installUpdate() })
+            col.addView(box, lp(top = 12))
+        }
         val bm = getSystemService(BatteryManager::class.java)
         val lvl = bm?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: 0
         val chg = bm?.isCharging == true
@@ -313,7 +335,110 @@ class MainActivity : Activity() {
         row("Kafelek „Oszczędzanie”", "Dodasz go w szybkich ustawieniach: przeciągnij panel w dół → ołówek → przeciągnij kafelek.", null)
 
         header("Aktualizacje")
-        row("Sprawdź aktualizację", if (Cfg.token.isBlank()) "Wpisz token GitHub (raz)" else "Instaluje się sama przez Shizuku") { updateSheet() }
+        val ver = vbox().apply { setPadding(0, dp(10), 0, dp(4)) }
+        val vr = hbox()
+        vr.addView(tv("Zainstalowana wersja", 16f), lp(0, -2, 1f))
+        vr.addView(tv(versionName(), 16f, true))
+        ver.addView(vr)
+        col.addView(ver)
+        if (Cfg.token.isBlank()) {
+            col.addView(tv("Wklej token GitHub (ten sam co w Termuksie). Bateria będzie sama sprawdzać i instalować nowe wersje.", 13f, color = DIM), lp(top = 8))
+            val e = EditText(this).apply {
+                hint = "ghp_…"; setTextColor(FG); setHintTextColor(DIM); textSize = 15f; setSingleLine()
+                inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+                background = round(SURF, 14); setPadding(dp(12), dp(10), dp(12), dp(10))
+            }
+            col.addView(e, lp(top = 8))
+            col.addView(btn("Zapisz token") { Cfg.token = e.text.toString().trim(); Cfg.save(); checkUpdate(true) }, lp(-2, -2, top = 8))
+        } else {
+            val tr = hbox()
+            tr.addView(tv("Token GitHub zapisany", 16f), lp(0, -2, 1f))
+            tr.addView(btn("Usuń") { Cfg.token = ""; Cfg.save(); update = null; updMsg = ""; render() })
+            col.addView(tr, lp(top = 6))
+            val st = tv(updMsg, 14f, color = DIM)
+            updStatus = st
+            if (updMsg.isNotEmpty()) col.addView(st, lp(top = 6))
+            val u2 = update
+            if (u2 != null) col.addView(btn("Pobierz i zainstaluj 1.${u2.number}", true) { installUpdate() }, lp(-2, -2, top = 8))
+            else col.addView(btn("Sprawdź aktualizacje") { checkUpdate(true) }, lp(-2, -2, top = 8))
+        }
+        col.addView(btn("Otwórz budowanie na GitHubie") { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/${Updater.REPO}/actions"))) }, lp(-2, -2, top = 8))
+        col.addView(tv("Bateria ${versionName()}", 12f, color = DIM).apply { gravity = Gravity.CENTER }, lp(top = 18))
+    }
+
+    // ------------------------------------------------------------ aktualizacje (jak w Kartach i Audiotece)
+    private fun installedVersion(): Long = try { packageManager.getPackageInfo(packageName, 0).longVersionCode } catch (e: Exception) { 0L }
+
+    private fun versionName(): String = try { packageManager.getPackageInfo(packageName, 0).versionName ?: "?" } catch (e: Exception) { "?" }
+
+    private fun checkUpdate(manual: Boolean) {
+        val token = Cfg.token
+        if (token.isBlank()) { if (manual) toast("Najpierw wklej token GitHub"); return }
+        if (manual) { updMsg = "Sprawdzam…"; render() }
+        Thread {
+            val res: Pair<Updater.Info?, String> = try {
+                val i = Updater.check(token)
+                if (i != null && i.number > installedVersion()) Pair(i, "Dostępna wersja 1.${i.number}") else Pair(null, "Masz najnowszą wersję")
+            } catch (e: Exception) {
+                Pair(null, "Błąd: " + (e.message ?: "brak połączenia"))
+            }
+            h.post {
+                update = res.first
+                if (manual || res.first != null) { updMsg = res.second; render() }
+            }
+        }.start()
+    }
+
+    private fun installUpdate() {
+        val info = update ?: return
+        if (!packageManager.canRequestPackageInstalls()) {
+            toast("Zezwól Baterii na instalowanie aplikacji, potem wróć i stuknij ponownie")
+            try { startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName"))) } catch (e: Exception) {}
+            return
+        }
+        updMsg = "Pobieram… 0%"
+        render()
+        val file = java.io.File(cacheDir, "update.apk")
+        Thread {
+            try {
+                Updater.download(Cfg.token, info, file) { pr -> h.post { updMsg = "Pobieram… $pr%"; updStatus?.text = updMsg } }
+                installApk(file)
+                h.post { updMsg = "Potwierdź instalację"; updStatus?.text = updMsg }
+            } catch (e: Exception) {
+                h.post { updMsg = "Błąd: " + (e.message ?: "pobieranie nieudane"); render() }
+            }
+        }.start()
+    }
+
+    private fun installApk(file: java.io.File) {
+        val pi = packageManager.packageInstaller
+        val id = pi.createSession(android.content.pm.PackageInstaller.SessionParams(android.content.pm.PackageInstaller.SessionParams.MODE_FULL_INSTALL))
+        val session = pi.openSession(id)
+        try {
+            session.openWrite("bateria", 0, file.length()).use { out ->
+                file.inputStream().use { it.copyTo(out) }
+                session.fsync(out)
+            }
+            val i = Intent(this, MainActivity::class.java).setAction(ACTION_INSTALL)
+            val pend = android.app.PendingIntent.getActivity(this, 7, i, android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_MUTABLE)
+            session.commit(pend.intentSender)
+        } finally {
+            session.close()
+        }
+    }
+
+    private fun handleInstall(i: Intent?) {
+        if (i?.action != ACTION_INSTALL) return
+        when (i.getIntExtra(android.content.pm.PackageInstaller.EXTRA_STATUS, -999)) {
+            android.content.pm.PackageInstaller.STATUS_PENDING_USER_ACTION -> {
+                @Suppress("DEPRECATION")
+                val confirm = i.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
+                if (confirm != null) startActivity(confirm)
+            }
+            android.content.pm.PackageInstaller.STATUS_SUCCESS -> toast("Zaktualizowano")
+            -999 -> {}
+            else -> { updMsg = "Instalacja nieudana: " + (i.getStringExtra(android.content.pm.PackageInstaller.EXTRA_STATUS_MESSAGE) ?: "nieznany błąd"); render() }
+        }
     }
 
     private fun open(list: List<Intent>) {
@@ -360,28 +485,6 @@ class MainActivity : Activity() {
                 d.dismiss(); work("Ograniczam…") { Engine.restrictVendor(this); "Ograniczono" }
             }, lp(top = 14))
             c.addView(btn("Anuluj") { d.dismiss() }, lp(top = 8))
-        }
-    }
-
-    private fun updateSheet() {
-        sheet("Aktualizacja") { c, d ->
-            val e = EditText(this).apply {
-                setText(Cfg.token); hint = "Token GitHub (ghp_…)"; setTextColor(FG); setHintTextColor(DIM); textSize = 14f
-                background = round(BG, 14); setPadding(dp(12), dp(10), dp(12), dp(10))
-            }
-            c.addView(e, lp(top = 10))
-            c.addView(btn("Sprawdź i zainstaluj", true) {
-                Cfg.token = e.text.toString().trim(); Cfg.save(); d.dismiss()
-                work("Sprawdzam…") {
-                    val info = Updater.check(Cfg.token) ?: return@work "Brak wydań"
-                    val cur = try { packageManager.getPackageInfo(packageName, 0).longVersionCode.toInt() } catch (x: Exception) { 0 }
-                    if (info.number <= cur) "Masz najnowszą wersję (${cur})" else {
-                        val r = Updater.install(this, Cfg.token, info)
-                        if (r.contains("Success")) "Zainstalowano wersję ${info.number}" else "Instalacja: ${r.take(120)}"
-                    }
-                }
-            }, lp(top = 12))
-            c.addView(btn("Otwórz budowanie na GitHubie") { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/${Updater.REPO}/actions"))) }, lp(top = 8))
         }
     }
 
