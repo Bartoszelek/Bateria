@@ -129,6 +129,12 @@ object Av {
         } catch (e: Exception) { null } ?: return out
         val req = pi.requestedPermissions?.toSet() ?: emptySet()
         val ai = pi.applicationInfo
+        // aplikacje systemowe i ze Sklepu Play / Galaxy Store mają prawo do szerokich uprawnień – oceniamy je tylko po sygnaturach
+        if (installedPkg != null) {
+            val sys = ai != null && ai.flags and ApplicationInfo.FLAG_SYSTEM != 0
+            val src = try { pm.getInstallSourceInfo(installedPkg).installingPackageName } catch (e: Exception) { null }
+            if (sys || src == "com.android.vending" || src == "com.sec.android.app.samsungapps") return out
+        }
         fun has(vararg p: String) = p.all { (P + it) in req }
         if (has("RECEIVE_SMS", "INTERNET") && (has("READ_SMS") || has("SEND_SMS"))) out += "czyta lub wysyła SMS-y i ma internet (typowe dla trojanów bankowych)"
         if (pi.services?.any { it.permission == "android.permission.BIND_ACCESSIBILITY_SERVICE" } == true && (P + "SYSTEM_ALERT_WINDOW") in req)
@@ -179,6 +185,7 @@ object Av {
         val r = Result(path, name, pkg, h.sha256)
         r.known = Sig.match(h)
         if (path.endsWith(".apk")) r.heur = heuristics(c, path, pkg)
+        if (!r.known && (r.sha in Cfg.avTrust || (pkg != null && pkg in Cfg.avTrust))) r.heur = emptyList()
         return r
     }
 

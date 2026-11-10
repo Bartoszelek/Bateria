@@ -85,6 +85,8 @@ class MainActivity : Activity() {
         setContentView(root)
         try { Shizuku.addRequestPermissionResultListener(permListener) } catch (e: Throwable) {}
         if (!Sh.granted()) Sh.request() else onShizukuReady()
+        // dawna opcja „Prywatny DNS AdGuard” psuła część sieci Wi-Fi – wyłączamy ją, blokowanie robi Strażnik sieci
+        Thread { try { if (Priv.dnsOn(this)) Priv.setDns(this, false) } catch (e: Exception) {} }.start()
         handleInstall(intent)
         intent?.getStringExtra("tab")?.let { tab = it }
         if (intent?.action == Intent.ACTION_SEND) intent.getStringExtra(Intent.EXTRA_TEXT)?.let { tab = "priv"; privSub = "links"; linkText = it }
@@ -1301,6 +1303,8 @@ class MainActivity : Activity() {
         val l = vbox()
         l.addView(tv(label, 15f).apply { maxLines = 1 })
         if (sub.isNotEmpty()) l.addView(tv(sub, 11f, color = DIM).apply { maxLines = 2 })
+        val marks = listOfNotNull(if (pkg in Cfg.netDeny) "🚫 internet w tle odcięty" else null, if (pkg in Cfg.trackBlock) "🛡 trackery zablokowane" else null)
+        if (marks.isNotEmpty()) l.addView(tv(marks.joinToString(" · "), 11f, true, ACC))
         r.addView(l, lp(0, -2, 1f).apply { leftMargin = dp(12) })
         r.addView(tv(right, 12f, true, rightColor).apply { setPadding(dp(8), 0, 0, 0) })
         return r
@@ -1373,10 +1377,9 @@ class MainActivity : Activity() {
             else privWork("Sprawdzam aplikacje…") { p -> trackers = Priv.scanAll(this, privSys, p); h.post { privSub = "trackers" }; null }
         }
         card("🏢 Usługi śledzące producenta", "Samsung, Google, Facebook, Microsoft – telemetria, profilowanie, reklamy") { privSub = "vendor"; render() }
-        toggle("Blokuj trackery w całym telefonie", "Prywatny DNS AdGuard: blokuje domeny reklam i śledzenia we wszystkich aplikacjach i przeglądarkach.", Priv.dnsOn(this)) {
-            if (!Sys.canWrite(this) && needShizuku()) return@toggle
-            work(null) { Priv.setDns(this, it); null }
-        }
+        row("Blokada reklam i trackerów w całym telefonie", if (NetBlock.monitoring && Cfg.blockTrackers) "Działa – Strażnik sieci, ${Dns.lists.size} domen na liście w telefonie"
+            else "Włącz Strażnika sieci (sekcja Bezpieczeństwo). Działa w telefonie i nie psuje Wi-Fi.") { privSub = "mon"; render() }
+        col.addView(line(), lp(-1, 1))
         row("Identyfikator reklamowy Google", "Usuń go – aplikacje nie połączą Twoich danych w jeden profil reklamowy") {
             open(listOf(Intent("com.google.android.gms.settings.ADS_PRIVACY"), Intent(Settings.ACTION_PRIVACY_SETTINGS)))
         }
@@ -1386,7 +1389,10 @@ class MainActivity : Activity() {
         }
 
         header("Dostęp do danych")
-        card("🌐 Internet w tle", "Które aplikacje mogą wysyłać dane, gdy z nich nie korzystasz", "${Cfg.netDeny.size} zablok.") { privSub = "net"; render() }
+        card("🌐 Internet w tle", if (Cfg.netDeny.isEmpty()) "Nikomu nie odciąłeś internetu" else "Odcięte: " + Cfg.netDeny.take(6).joinToString(", ") { p ->
+            try { packageManager.getApplicationLabel(packageManager.getApplicationInfo(p, 0)).toString() } catch (e: Exception) { p } } + if (Cfg.netDeny.size > 6) "…" else "",
+            "${Cfg.netDeny.size} odciętych") { privSub = "net"; render() }
+        if (Cfg.trackBlock.isNotEmpty()) col.addView(tv("🛡 Trackery zablokowane w ${Cfg.trackBlock.size} aplikacjach (internet zostawiony)", 12f, true, ACC), lp(top = 6))
         for (g in Priv.GROUPS) card(g.name, g.desc) { privSub = "g:" + g.key; render() }
 
         header("Dostępy specjalne (najgroźniejsze)")
@@ -1476,6 +1482,15 @@ class MainActivity : Activity() {
             col.addView(r)
         }
         header("Aplikacje")
+        val notYet = withT.filter { it.pkg !in Cfg.trackBlock }
+        if (notYet.isNotEmpty()) col.addView(btn("Zablokuj trackery w sieci wszystkim (${notYet.size})", true) {
+            Cfg.trackBlock.addAll(notYet.map { it.pkg }); Cfg.save()
+            if (!NetBlock.monitoring) {
+                val i = VpnService.prepare(this)
+                if (i != null) startActivityForResult(i, 7) else { Cfg.monitor = true; Cfg.save(); NetBlock.monitor(this, true) }
+            }
+            toast("Zablokowano – aplikacje działają dalej"); h.postDelayed({ render() }, 600)
+        }, lp(-2, -2, top = 6))
         for (a in withT) col.addView(appIconRow(a.pkg, a.label, a.trackers.joinToString(", ") { it.name },
             "${a.trackers.size}", if (a.trackers.size >= 5) 0xFFFF453A.toInt() else WARN) { privSub = "app:" + a.pkg; render() })
         col.addView(btn("Skanuj ponownie") { trackers = null; privWork("Sprawdzam aplikacje…") { p -> trackers = Priv.scanAll(this, privSys, p); null } }, lp(-2, -2, top = 10))
@@ -1492,10 +1507,46 @@ class MainActivity : Activity() {
                 col.addView(r)
             }
         }
-        header("Odetnij")
+        // ---- stan tej aplikacji – zawsze na górze
         val blocked = pkg in Cfg.netDeny
-        col.addView(btn(if (blocked) "✓ Internet w tle zablokowany – odblokuj" else "Zablokuj internet w tle", !blocked) {
-            if (needShizuku()) return@btn; work(null) { Priv.setNet(this, pkg, blocked); null }
+        val tb = pkg in Cfg.trackBlock
+        val comps = Priv.trackerComponents(this, pkg)
+        val compsOff = comps.count { !it.second }
+        val box = vbox().apply { background = round(SURF, 16); setPadding(dp(14), dp(12), dp(14), dp(12)) }
+        box.addView(tv("Stan", 12f, true, DIM))
+        box.addView(tv(if (blocked) "🚫 Internet w tle: ODCIĘTY" else "🌐 Internet w tle: działa", 15f, true, if (blocked) ACC else FG), lp(top = 4))
+        box.addView(tv(if (tb || Cfg.blockTrackers && NetBlock.monitoring) "🛡 Trackery w sieci: ZABLOKOWANE" + (if (!tb) " (blokada ogólna)" else "") else "⚠ Trackery w sieci: przepuszczane", 15f, true,
+            if (tb || Cfg.blockTrackers && NetBlock.monitoring) ACC else WARN), lp(top = 2))
+        if (comps.isNotEmpty()) box.addView(tv(if (compsOff == comps.size) "🛡 Składniki śledzące: WYŁĄCZONE ($compsOff)" else if (compsOff > 0) "Składniki śledzące: wyłączone $compsOff z ${comps.size}" else "⚠ Składniki śledzące: działają (${comps.size})", 15f, true,
+            if (compsOff == comps.size) ACC else WARN), lp(top = 2))
+        col.addView(box, lp(top = 10))
+
+        header("Wyłącz trackery (aplikacja działa dalej)")
+        col.addView(tv("Aplikacja zachowuje internet i działa normalnie – blokowane są tylko połączenia z serwerami reklam i śledzenia oraz jej wewnętrzne usługi śledzące.", 12f, color = DIM), lp(top = 2))
+        col.addView(btn(if (tb) "✓ Trackery w sieci zablokowane – cofnij" else "Zablokuj trackery w sieci", !tb) {
+            if (!tb) {
+                Cfg.trackBlock.add(pkg); Cfg.save()
+                if (!NetBlock.monitoring) {
+                    val i = VpnService.prepare(this)
+                    if (i != null) startActivityForResult(i, 7) else { Cfg.monitor = true; Cfg.save(); NetBlock.monitor(this, true) }
+                }
+                if (Dns.lists.isEmpty()) toast("Pobierz listy blokowania: Ochrona → Strażnik sieci")
+            } else { Cfg.trackBlock.remove(pkg); Cfg.save() }
+            h.postDelayed({ render() }, 600)
+        }, lp(-2, -2, top = 8))
+        if (comps.isNotEmpty()) col.addView(btn(if (compsOff == comps.size) "✓ Składniki śledzące wyłączone – włącz z powrotem" else "Wyłącz składniki śledzące (${comps.size})", compsOff != comps.size) {
+            if (needShizuku()) return@btn
+            val enable = compsOff == comps.size
+            work(if (enable) "Włączam…" else "Wyłączam…") {
+                Priv.setTrackerComponents(pkg, comps.map { it.first }, enable)
+                if (enable) "Składniki włączone" else "Wyłączono ${comps.size} składników. Gdyby aplikacja zaczęła się zawieszać – włącz je z powrotem."
+            }
+        }, lp(-2, -2, top = 8))
+        if (comps.isNotEmpty()) col.addView(tv(comps.joinToString("\n") { (if (it.second) "• " else "✕ ") + it.first.substringAfterLast('.') + "  (" + it.first.substringBeforeLast('.').takeLast(40) + ")" }, 11f, color = DIM), lp(top = 6))
+
+        header("Odetnij całkiem")
+        col.addView(btn(if (blocked) "✓ Internet w tle odcięty – przywróć" else "Odetnij internet w tle", !blocked) {
+            if (needShizuku()) return@btn; work(null) { Priv.setNet(this, pkg, blocked); if (blocked) "Internet w tle przywrócony" else "Internet w tle odcięty" }
         }, lp(-2, -2, top = 8))
         col.addView(btn("Ogranicz działanie w tle") { moveSheet(listOf(pkg)) }, lp(-2, -2, top = 8))
         col.addView(btn("Uprawnienia aplikacji (ustawienia systemu)") {
@@ -1647,9 +1698,17 @@ class MainActivity : Activity() {
             else ar.addView(btn("Do kwarantanny", r.level == 2) {
                 work("Przenoszę…") { Mem.toTrash(this, listOf(r.path)); synchronized(Av.results) { Av.results.remove(r) }; "Plik w kwarantannie (Pamięć → Kosz)" }
             }, lp(-2, -2).apply { rightMargin = dp(8) })
-            if (r.pkg != null) ar.addView(btn("Odetnij internet") { if (needShizuku()) return@btn; work(null) { Priv.setNet(this, r.pkg, false); "Zablokowano" } }, lp(-2, -2).apply { rightMargin = dp(8) })
+            if (r.pkg != null) {
+                val cut = r.pkg in Cfg.netDeny
+                ar.addView(btn(if (cut) "✓ Internet odcięty – przywróć" else "Odetnij internet", cut) {
+                    if (needShizuku()) return@btn; work(null) { Priv.setNet(this, r.pkg, cut); if (cut) "Internet przywrócony" else "Internet w tle odcięty" }
+                }, lp(-2, -2).apply { rightMargin = dp(8) })
+            }
             if (r.pkg != null) ar.addView(btn("Oryginał w Sklepie Play") { try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=${r.pkg}"))) } catch (e: Exception) {} }, lp(-2, -2).apply { rightMargin = dp(8) })
-            ar.addView(btn("To fałszywy alarm") { synchronized(Av.results) { Av.results.remove(r) }; render() })
+            ar.addView(btn("To fałszywy alarm") {
+                Cfg.avTrust.add(r.pkg ?: r.sha); Cfg.save()
+                synchronized(Av.results) { Av.results.remove(r) }; render()
+            })
             v.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(ar) }, lp(top = 6))
             col.addView(v); col.addView(line(), lp(-1, 1))
         }

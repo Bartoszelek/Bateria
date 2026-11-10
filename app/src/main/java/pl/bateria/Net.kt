@@ -296,7 +296,9 @@ class NetBlock : VpnService() {
 
     private fun restoreDns() {
         val old = Cfg.prev.remove("dns_mode") ?: return
-        Sys.put(this, "global", "private_dns_mode", old)
+        // serwer AdGuard ustawiony dawniej przez Bastion nie wraca – zostaje tryb automatyczny
+        val adguard = Sys.get(this, "global", "private_dns_specifier").contains("adguard")
+        Sys.put(this, "global", "private_dns_mode", if (old == "hostname" && adguard) "opportunistic" else old)
         Cfg.save()
     }
 
@@ -344,7 +346,7 @@ class NetBlock : VpnService() {
             !allowed && Sig.badDomain(domain) -> 5
             domain in Cfg.blockDomains || Cfg.blockDomains.any { domain.endsWith(".$it") } -> 4
             appBlocked -> 2
-            tracker && Cfg.blockTrackers -> 1
+            tracker && (Cfg.blockTrackers || pkg in Cfg.trackBlock) -> 1
             tracker -> 3
             else -> 0
         }

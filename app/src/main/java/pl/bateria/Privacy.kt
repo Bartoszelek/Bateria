@@ -356,6 +356,25 @@ object Priv {
         return found
     }
 
+    /** Składniki aplikacji należące do bibliotek śledzących (usługi i odbiorniki) – nazwa → czy włączony. */
+    fun trackerComponents(c: Context, pkg: String): List<Pair<String, Boolean>> {
+        val pm = c.packageManager
+        val pi = try {
+            pm.getPackageInfo(pkg, PackageManager.GET_SERVICES or PackageManager.GET_RECEIVERS or PackageManager.MATCH_DISABLED_COMPONENTS)
+        } catch (e: Exception) { return emptyList() }
+        // Firebase Analytics ma składniki w pakiecie „measurement”
+        val prefixes = TRACKERS.flatMap { it.prefixes } + listOf("com.google.android.gms.measurement", "com.google.android.datatransport", "com.facebook.CampaignTrackingReceiver",
+            "com.google.android.gms.ads", "com.android.installreferrer")
+        val names = ((pi.services?.map { it.name } ?: emptyList()) + (pi.receivers?.map { it.name } ?: emptyList())).filter { n -> prefixes.any { n.startsWith(it) } }
+        return names.distinct().map { n ->
+            val st = pm.getComponentEnabledSetting(ComponentName(pkg, n))
+            Pair(n, st != PackageManager.COMPONENT_ENABLED_STATE_DISABLED && st != PackageManager.COMPONENT_ENABLED_STATE_DISABLED_USER)
+        }
+    }
+
+    fun setTrackerComponents(pkg: String, names: List<String>, enable: Boolean) =
+        names.chunked(20).forEach { ch -> Sh.runAll(ch.map { "pm ${if (enable) "enable" else "disable"} '$pkg/$it'" }) }
+
     class AppTrackers(val pkg: String, val label: String, val trackers: List<Tracker>, val system: Boolean)
 
     private fun cacheFile(c: Context) = File(c.filesDir, "trackers.json")

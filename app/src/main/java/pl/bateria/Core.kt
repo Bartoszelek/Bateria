@@ -226,6 +226,8 @@ object Cfg {
     var avAt = 0L                                 // ostatni skan
     var smsGuard = true
     val locked = HashSet<String>()                // aplikacje wymagające odcisku
+    val trackBlock = HashSet<String>()            // aplikacje z zablokowanymi trackerami (internet zostaje)
+    val avTrust = HashSet<String>()               // „to fałszywy alarm” – zapamiętane
     var travel = false
     var clipClear = false
     var ultraOn = false
@@ -257,7 +259,7 @@ object Cfg {
     /** Wczytuje ustawienia od nowa (po imporcie kopii). */
     fun reload(c: Context) {
         loaded = false
-        cats.clear(); auto.clear(); prev.clear(); bgLocOk.clear(); pendingFrom.clear(); netDeny.clear(); blockDomains.clear(); allowDomains.clear(); locked.clear(); bundleApps.clear(); quietApps.clear(); notifWords.clear()
+        cats.clear(); auto.clear(); prev.clear(); bgLocOk.clear(); pendingFrom.clear(); netDeny.clear(); blockDomains.clear(); allowDomains.clear(); locked.clear(); trackBlock.clear(); avTrust.clear(); bundleApps.clear(); quietApps.clear(); notifWords.clear()
         init(c)
     }
 
@@ -296,6 +298,8 @@ object Cfg {
             o.optJSONArray("quietApps")?.let { a -> for (i in 0 until a.length()) quietApps.add(a.getString(i)) }
             o.optJSONArray("notifWords")?.let { a -> for (i in 0 until a.length()) notifWords.add(a.getString(i)) }
             travel = o.optBoolean("travel"); clipClear = o.optBoolean("clipClear")
+            o.optJSONArray("trackBlock")?.let { a -> for (i in 0 until a.length()) trackBlock.add(a.getString(i)) }
+            o.optJSONArray("avTrust")?.let { a -> for (i in 0 until a.length()) avTrust.add(a.getString(i)) }
             o.optJSONArray("locked")?.let { a -> for (i in 0 until a.length()) locked.add(a.getString(i)) }
             sigAt = o.optLong("sigAt"); avAt = o.optLong("avAt"); smsGuard = o.optBoolean("smsGuard", true); wifiGuard = o.optBoolean("wifiGuard", true)
             antiTheft = o.optBoolean("antiTheft"); theftTries = o.optInt("theftTries", 3); theftSiren = o.optBoolean("theftSiren", true)
@@ -332,6 +336,7 @@ object Cfg {
             .put("quietFrom", quietFrom).put("quietTo", quietTo).put("lastDigest", lastDigest).put("backupTree", backupTree).put("dlAuto", dlAuto)
             .put("bundleApps", JSONArray(bundleApps.toList())).put("quietApps", JSONArray(quietApps.toList())).put("notifWords", JSONArray(notifWords))
             .put("travel", travel).put("clipClear", clipClear).put("locked", JSONArray(locked.toList()))
+            .put("trackBlock", JSONArray(trackBlock.toList())).put("avTrust", JSONArray(avTrust.toList()))
             .put("sigAt", sigAt).put("avAt", avAt).put("smsGuard", smsGuard).put("wifiGuard", wifiGuard)
             .put("antiTheft", antiTheft).put("theftTries", theftTries).put("theftSiren", theftSiren).put("avRealtime", avRealtime).put("listsAt", listsAt)
             .put("btAuto", btAuto).put("wifiAuto", wifiAuto)
