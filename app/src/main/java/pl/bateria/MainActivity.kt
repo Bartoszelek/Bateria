@@ -34,6 +34,7 @@ import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import rikka.shizuku.Shizuku
+import java.util.Locale
 
 class MainActivity : Activity() {
     private val h = Handler(Looper.getMainLooper())
@@ -48,6 +49,8 @@ class MainActivity : Activity() {
     private var selMode = false
     private lateinit var actionBar: LinearLayout
     private var ranking: List<Engine.Use>? = null
+    private var rankBusy = false
+    private var rankErr = ""
     private var update: Updater.Info? = null
     private var updMsg = ""
     private var updStatus: TextView? = null
@@ -667,26 +670,36 @@ class MainActivity : Activity() {
         col.addView(tv(String.format("Przy wygaszonym ekranie: %.1f%%/h   ·   przy włączonym: %.1f%%/h", off, on), 14f), lp(top = 8))
         if (off > 1.5) col.addView(tv("Telefon traci sporo w uśpieniu – sprawdź ranking poniżej i ogranicz winowajców.", 13f, false, WARN), lp(top = 4))
 
-        header("Kto zjada baterię (od ostatniego ładowania)")
         val rk = ranking
         if (rk == null) {
-            col.addView(btn("Policz", true) {
-                if (!Sys.canDump(this) && needShizuku()) return@btn
-                work("Liczę…") { ranking = Engine.ranking(this); null }
-            }, lp(-2, -2, top = 6))
+            header("Kto zjada baterię")
+            if (rankBusy) col.addView(tv("Liczę zużycie…", 14f, color = DIM), lp(top = 6))
+            else if (rankErr.isNotEmpty()) col.addView(tv("⚠ $rankErr", 13f, false, WARN), lp(top = 6))
+            col.addView(btn("Policz ponownie", true) { loadRanking(true) }, lp(-2, -2, top = 8))
+            if (!rankBusy && rankErr.isEmpty()) loadRanking(false)
         } else {
-            val total = rk.sumOf { it.mah }.coerceAtLeast(0.01)
-            for (u in rk) {
-                val r = hbox().apply { setPadding(0, dp(8), 0, dp(8)) }
-                r.addView(ImageView(this).apply { setImageDrawable(Apps.icon(this@MainActivity, u.pkg)) }, LinearLayout.LayoutParams(dp(34), dp(34)))
-                val l = vbox()
-                l.addView(tv(u.label, 15f).apply { maxLines = 1 })
-                l.addView(tv(String.format("%.0f%% zużycia · w tle %.0f mAh · ekran %d min · %s", u.mah * 100 / total, u.bg, u.fgMin, Cat.name(Cfg.cat(u.pkg))), 12f, color = DIM))
-                r.addView(l, lp(0, -2, 1f).apply { leftMargin = dp(12) })
-                r.setOnClickListener { moveSheet(listOf(u.pkg)) }
-                col.addView(r)
+            fun list(title: String, hint: String, items: List<Engine.Use>, value: (Engine.Use) -> Double) {
+                header(title)
+                col.addView(tv(hint, 12f, color = DIM), lp(top = 2))
+                val sum = items.sumOf(value).coerceAtLeast(0.01)
+                if (items.isEmpty()) col.addView(tv("Brak danych – telefon niedawno się ładował.", 13f, color = DIM), lp(top = 6))
+                for ((k, u) in items.withIndex()) {
+                    val r = hbox().apply { setPadding(0, dp(8), 0, dp(8)) }
+                    r.addView(tv("${k + 1}.", 14f, true, DIM).apply { minWidth = dp(26) })
+                    r.addView(ImageView(this).apply { setImageDrawable(Apps.icon(this@MainActivity, u.pkg)) }, LinearLayout.LayoutParams(dp(34), dp(34)))
+                    val l = vbox()
+                    l.addView(tv(u.label, 15f).apply { maxLines = 1 })
+                    l.addView(tv(String.format(Locale.US, "%.0f%% · %.1f mAh · ekran %d min · %s", value(u) * 100 / sum, value(u), u.fgMin, Cat.name(Cfg.cat(u.pkg))), 12f, color = DIM))
+                    r.addView(l, lp(0, -2, 1f).apply { leftMargin = dp(10) })
+                    r.setOnClickListener { moveSheet(listOf(u.pkg)) }
+                    col.addView(r)
+                }
             }
-            col.addView(btn("Odśwież ranking") { ranking = null; render() }, lp(-2, -2, top = 8))
+            list("Zużycie w tle (od ostatniego ładowania)", "Co aplikacje zużywają, gdy z nich nie korzystasz – to tu szukaj winowajców. Stuknij, żeby zmienić kategorię.",
+                rk.filter { it.bg > 0.05 }.sortedByDescending { it.bg }.take(15)) { it.bg }
+            list("Zużycie ogólne (od ostatniego ładowania)", "Wszystko razem: na ekranie i w tle.",
+                rk.sortedByDescending { it.mah }.take(15)) { it.mah }
+            col.addView(btn("Odśwież") { loadRanking(true) }, lp(-2, -2, top = 8))
         }
 
         header("Lokalizacja w tle")
@@ -718,6 +731,18 @@ class MainActivity : Activity() {
         @Suppress("DEPRECATION")
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == 5 && resultCode != RESULT_OK) { Cfg.netBlock = false; Cfg.save(); render(); toast("Bez zgody na VPN blokada internetu nie działa") }
+    }
+
+    /** Liczy ranking w tle i odświeża ekran. */
+    private fun loadRanking(force: Boolean) {
+        if (rankBusy) return
+        if (!Sys.canDump(this) && !Sh.granted()) { rankErr = "Brak dostępu do statystyk – uruchom raz Shizuku, żeby nadać stałe uprawnienia"; render(); return }
+        rankBusy = true; rankErr = ""
+        if (force) { ranking = null; render() }
+        Thread {
+            val r = try { Engine.ranking(this) } catch (e: Exception) { rankErr = e.message ?: "błąd"; null }
+            h.post { ranking = r; rankBusy = false; if (tab == "use") render() }
+        }.start()
     }
 
     /** Pasek na dole przy zaznaczonych aplikacjach: przenieś do kategorii jednym stuknięciem. */

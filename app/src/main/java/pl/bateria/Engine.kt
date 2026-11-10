@@ -275,28 +275,51 @@ object Engine {
     }
 
     // ------------------------------------------------------------ ranking zużycia
-    class Use(val pkg: String, val label: String, val mah: Double, val bg: Double, val fgMin: Long)
+    /** Zużycie aplikacji: całość, na ekranie (fg) i w tle (bg + usługi + pamięć podręczna), w mAh. */
+    class Use(val pkg: String, val label: String, val mah: Double, val fg: Double, val bg: Double, val fgMin: Long)
+
+    /** Numer UID → pakiet, bez getPackagesForUid (na Samsungu rzuca wyjątek dla części UID). */
+    fun uidMap(c: Context): Map<Int, String> {
+        val m = HashMap<Int, String>()
+        try {
+            for (ai in c.packageManager.getInstalledApplications(PackageManager.MATCH_DISABLED_COMPONENTS or PackageManager.MATCH_UNINSTALLED_PACKAGES)) {
+                if (!m.containsKey(ai.uid % 100000)) m[ai.uid % 100000] = ai.packageName
+            }
+        } catch (e: Exception) {
+        }
+        return m
+    }
+
+    /** „u0a553”, „u150a12” albo „10553” → numer aplikacji (bez użytkownika). */
+    private fun appId(u: String): Int? = if (u.startsWith("u")) u.substringAfter('a').toIntOrNull()?.let { 10000 + it } else u.toIntOrNull()?.let { it % 100000 }
 
     fun ranking(c: Context): List<Use> {
         val txt = Sys.dump(c, "batterystats --charged")
+        if (txt.isBlank()) throw IllegalStateException("Brak dostępu do statystyk – uruchom raz Shizuku, żeby nadać stałe uprawnienia")
         val pm = c.packageManager
+        val uids = uidMap(c)
         val map = HashMap<String, DoubleArray>()
         val rx = Regex("""^\s*UID (u\d+a\d+|\d+):\s*([\d.]+)(.*)$""", RegexOption.MULTILINE)
-        val bgRx = Regex("""bg:\s*([\d.]+)""")
+        val partRx = Regex("""\b(fg|bg|fgs|cached):\s*([\d.]+)""")
         for (m in rx.findAll(txt)) {
-            val u = m.groupValues[1]
-            val uid = if (u.startsWith("u")) 10000 + u.substringAfter('a').toInt() + u.substring(1).substringBefore('a').toInt() * 100000 else u.toIntOrNull() ?: continue
-            if (uid < 10000) continue
-            val pkg = pm.getPackagesForUid(uid)?.firstOrNull() ?: continue
-            val bg = bgRx.find(m.groupValues[3])?.groupValues?.get(1)?.toDoubleOrNull() ?: 0.0
-            val a = map.getOrPut(pkg) { DoubleArray(2) }
-            a[0] += m.groupValues[2].toDoubleOrNull() ?: 0.0; a[1] += bg
+            val id = appId(m.groupValues[1]) ?: continue
+            if (id < 10000) continue
+            val pkg = uids[id] ?: continue
+            var fg = 0.0; var bg = 0.0
+            for (p in partRx.findAll(m.groupValues[3])) {
+                val v = p.groupValues[2].toDoubleOrNull() ?: 0.0
+                if (p.groupValues[1] == "fg") fg += v else bg += v
+            }
+            val total = m.groupValues[2].toDoubleOrNull() ?: 0.0
+            if (fg == 0.0 && bg == 0.0) fg = total
+            val a = map.getOrPut(pkg) { DoubleArray(3) }
+            a[0] += total; a[1] += fg; a[2] += bg
         }
-        val fg = Apps.screenTime(c, System.currentTimeMillis() - 86_400_000L)
+        val scr = Apps.screenTime(c, System.currentTimeMillis() - 86_400_000L)
         return map.map { (p, v) ->
             val label = try { pm.getApplicationLabel(pm.getApplicationInfo(p, PackageManager.MATCH_DISABLED_COMPONENTS)).toString() } catch (e: Exception) { p }
-            Use(p, label, v[0], v[1], (fg[p] ?: 0L) / 60_000)
-        }.filter { it.mah > 0.05 }.sortedByDescending { it.mah }.take(40)
+            Use(p, label, v[0], v[1], v[2], (scr[p] ?: 0L) / 60_000)
+        }.filter { it.mah > 0.05 }
     }
 
     // ------------------------------------------------------------ strażnik
@@ -306,13 +329,13 @@ object Engine {
         if (!Cfg.guard) return
         val txt = Sys.dump(c, "power")
         val rx = Regex("""PARTIAL_WAKE_LOCK\s+'([^']*)'.*?ACQ=-([0-9hdms]+)\s.*?uid=(\d+)""")
-        val pm = c.packageManager
+        val uids = uidMap(c)
         val skip = Apps.untouchable(c)
         for (m in rx.findAll(txt)) {
             val ms = dur(m.groupValues[2])
             val uid = m.groupValues[3].toIntOrNull() ?: continue
             if (uid < 10000 || ms < 20 * 60_000L) continue
-            val pkg = pm.getPackagesForUid(uid)?.firstOrNull() ?: continue
+            val pkg = uids[uid % 100000] ?: continue
             if (pkg in skip || Cfg.cat(pkg) == Cat.PROTECT || Cfg.cat(pkg) == Cat.BG) continue
             if (System.currentTimeMillis() - (warned[pkg] ?: 0L) < 6 * 3600_000L) continue
             warned[pkg] = System.currentTimeMillis()
