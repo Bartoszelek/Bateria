@@ -21,7 +21,7 @@ object Apps {
         "pl.aliorbank.aib", "eu.eleader.mobilebanking.pekao", "com.revolut.revolut", "pl.nask.mobywatel",
         "com.google.android.apps.walletnfcrel", "com.samsung.android.spay",
         "pl.notatnik", "pl.audioteka", "pl.konwerter", "pl.karty", "pl.einklauncher", "pl.timegate",
-        "moe.shizuku.privileged.api", "com.google.android.apps.authenticator2", "com.azure.authenticator"
+        "moe.shizuku.privileged.api", "af.shizuku.plus.api", "com.google.android.apps.authenticator2", "com.azure.authenticator"
     )
 
     /** Usługi Samsunga, Google i Facebooka, które można bezpiecznie ograniczyć w tle. */
@@ -56,7 +56,7 @@ object Apps {
         s.add(c.packageName)
         s.add("android"); s.add("com.android.systemui"); s.add("com.android.phone"); s.add("com.samsung.android.dialer")
         s.add("com.android.settings"); s.add("com.google.android.gms"); s.add("com.android.vending")
-        s.add("com.samsung.android.messaging"); s.add("com.google.android.apps.messaging"); s.add("moe.shizuku.privileged.api")
+        s.add("com.samsung.android.messaging"); s.add("com.google.android.apps.messaging"); s.add("moe.shizuku.privileged.api"); s.add("af.shizuku.plus.api")
         val pm = c.packageManager
         pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME), 0).forEach { s.add(it.activityInfo.packageName) }
         val ime = android.provider.Settings.Secure.getString(c.contentResolver, "default_input_method") ?: ""

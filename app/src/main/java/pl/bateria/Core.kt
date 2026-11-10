@@ -44,6 +44,32 @@ object Sh {
  * zmiana ustawień systemu, odczyt statystyk baterii, statystyki użycia.
  */
 object Sys {
+    const val SHIZUKU = "moe.shizuku.privileged.api"
+    /** Shizuku albo Shizuku+ (z autostartem i watchdogiem) – ta, która jest zainstalowana. */
+    val SHIZUKU_ALL = listOf("moe.shizuku.privileged.api", "af.shizuku.plus.api")
+    fun shizukuPkg(c: Context): String = SHIZUKU_ALL.firstOrNull { Apps.installed(c.packageManager, it) } ?: SHIZUKU
+
+    /**
+     * Podtrzymanie Shizuku: debugowanie nie wygasa po 7 dniach, opcje programisty i debugowanie USB zostają włączone.
+     * Działa bez Shizuku (stałe uprawnienie do ustawień).
+     */
+    fun keepAdb(c: Context) {
+        if (!canWrite(c)) return
+        put(c, "global", "adb_allowed_connection_time", "0")   // „Wyłącz limit czasu autoryzacji ADB”
+        put(c, "global", "development_settings_enabled", "1")
+        put(c, "global", "adb_enabled", "1")
+    }
+
+    /** Włącza debugowanie bezprzewodowe (potrzebne do uruchomienia Shizuku) – tylko gdy jest Wi-Fi. */
+    fun wirelessDebugOn(c: Context): Boolean {
+        if (!canWrite(c)) return false
+        val cm = c.getSystemService(android.net.ConnectivityManager::class.java)
+        val wifi = cm?.getNetworkCapabilities(cm.activeNetwork)?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) == true
+        if (!wifi) return false
+        keepAdb(c)
+        return put(c, "global", "adb_wifi_enabled", "1")
+    }
+
     fun canWrite(c: Context) = c.checkSelfPermission("android.permission.WRITE_SECURE_SETTINGS") == PackageManager.PERMISSION_GRANTED
     fun canDump(c: Context) = c.checkSelfPermission("android.permission.DUMP") == PackageManager.PERMISSION_GRANTED
 
@@ -56,6 +82,22 @@ object Sys {
             "pm grant $p android.permission.DUMP",
             "appops set $p GET_USAGE_STATS allow",
             "appops set $p WRITE_SETTINGS allow",
+            "appops set $p MANAGE_EXTERNAL_STORAGE allow",
+            "pm grant $p android.permission.BLUETOOTH_CONNECT",
+            "pm grant $p android.permission.RECEIVE_SMS",
+            "pm grant $p android.permission.CAMERA",
+            "appops set $p SYSTEM_ALERT_WINDOW allow",
+            // uprawnienia niedostępne zwykłym aplikacjom: dziennik systemu i statystyki użycia czujników
+            "pm grant $p android.permission.READ_LOGS",
+            "pm grant $p android.permission.GET_APP_OPS_STATS",
+            "pm grant $p android.permission.BATTERY_STATS",
+            // Shizuku i Bastion – nie usypiać i nie ubijać
+            "dumpsys deviceidle whitelist +${shizukuPkg(c)}",
+            "cmd appops set ${shizukuPkg(c)} RUN_ANY_IN_BACKGROUND allow",
+            "cmd appops set ${shizukuPkg(c)} RUN_IN_BACKGROUND allow",
+            "am set-standby-bucket ${shizukuPkg(c)} active",
+            "cmd appops set $p RUN_ANY_IN_BACKGROUND allow",
+            "am set-standby-bucket $p active",
             "dumpsys deviceidle whitelist +$p"
         ))
     }
@@ -170,6 +212,56 @@ object Cfg {
     val frozenNow = HashSet<String>()             // zamrożone po wygaszeniu (do odmrożenia)
     val drops = ArrayList<Long>()                 // kiedy Shizuku się wyłączało
     var shizukuWasUp = false
+    var autoClean = false
+    var storageAlert = true
+    var lastClean = 0L
+    val netDeny = HashSet<String>()               // bez internetu w tle
+    var btAuto = false
+    var monitor = false                           // strażnik sieci (DNS)
+    var blockTrackers = true
+    var dnsAdguard = false
+    val blockDomains = HashSet<String>()
+    var alerts = true
+    var sigAt = 0L                                // kiedy pobrano bazy sygnatur
+    var avAt = 0L                                 // ostatni skan
+    var smsGuard = true
+    val locked = HashSet<String>()                // aplikacje wymagające odcisku
+    var travel = false
+    var clipClear = false
+    var ultraOn = false
+    var ultraAuto = false
+    var ultraAt = 15
+    var chargeGuard = true
+    var chargeLimit = 80
+    var designMah = 4700
+    var profiles = "[]"
+    var phantom = false
+    var notifHistory = true
+    val bundleApps = HashSet<String>()
+    val quietApps = HashSet<String>()
+    var quietFrom = 22
+    var quietTo = 7
+    val notifWords = ArrayList<String>()
+    var lastDigest = 0L
+    var backupTree = ""
+    var dlAuto = false
+    var wifiGuard = true
+    var antiTheft = false
+    var theftTries = 3
+    var theftSiren = true
+    var avRealtime = true                         // sprawdzaj nowe pliki i aplikacje
+    val allowDomains = HashSet<String>()
+    var listsAt = 0L
+    var wifiAuto = false
+
+    /** Wczytuje ustawienia od nowa (po imporcie kopii). */
+    fun reload(c: Context) {
+        loaded = false
+        cats.clear(); auto.clear(); prev.clear(); bgLocOk.clear(); pendingFrom.clear(); netDeny.clear(); blockDomains.clear(); allowDomains.clear(); locked.clear(); bundleApps.clear(); quietApps.clear(); notifWords.clear()
+        init(c)
+    }
+
+    fun file(c: Context) = File(c.filesDir, "cfg.json")
 
     fun init(c: Context) {
         Engine.init(c)
@@ -194,6 +286,24 @@ object Cfg {
             o.optJSONArray("frozenNow")?.let { a -> for (i in 0 until a.length()) frozenNow.add(a.getString(i)) }
             o.optJSONArray("drops")?.let { a -> for (i in 0 until a.length()) drops.add(a.getLong(i)) }
             shizukuWasUp = o.optBoolean("shizukuWasUp")
+            o.optJSONArray("netDeny")?.let { a -> for (i in 0 until a.length()) netDeny.add(a.getString(i)) }
+            monitor = o.optBoolean("monitor"); blockTrackers = o.optBoolean("blockTrackers", true); dnsAdguard = o.optBoolean("dnsAdguard"); alerts = o.optBoolean("alerts", true)
+            ultraOn = o.optBoolean("ultraOn"); ultraAuto = o.optBoolean("ultraAuto"); ultraAt = o.optInt("ultraAt", 15)
+            chargeGuard = o.optBoolean("chargeGuard", true); chargeLimit = o.optInt("chargeLimit", 80); designMah = o.optInt("designMah", 4700)
+            profiles = o.optString("profiles", "[]"); phantom = o.optBoolean("phantom"); notifHistory = o.optBoolean("notifHistory", true)
+            quietFrom = o.optInt("quietFrom", 22); quietTo = o.optInt("quietTo", 7); lastDigest = o.optLong("lastDigest"); backupTree = o.optString("backupTree"); dlAuto = o.optBoolean("dlAuto")
+            o.optJSONArray("bundleApps")?.let { a -> for (i in 0 until a.length()) bundleApps.add(a.getString(i)) }
+            o.optJSONArray("quietApps")?.let { a -> for (i in 0 until a.length()) quietApps.add(a.getString(i)) }
+            o.optJSONArray("notifWords")?.let { a -> for (i in 0 until a.length()) notifWords.add(a.getString(i)) }
+            travel = o.optBoolean("travel"); clipClear = o.optBoolean("clipClear")
+            o.optJSONArray("locked")?.let { a -> for (i in 0 until a.length()) locked.add(a.getString(i)) }
+            sigAt = o.optLong("sigAt"); avAt = o.optLong("avAt"); smsGuard = o.optBoolean("smsGuard", true); wifiGuard = o.optBoolean("wifiGuard", true)
+            antiTheft = o.optBoolean("antiTheft"); theftTries = o.optInt("theftTries", 3); theftSiren = o.optBoolean("theftSiren", true)
+            avRealtime = o.optBoolean("avRealtime", true); listsAt = o.optLong("listsAt")
+            o.optJSONArray("allowDomains")?.let { a -> for (i in 0 until a.length()) allowDomains.add(a.getString(i)) }
+            o.optJSONArray("blockDomains")?.let { a -> for (i in 0 until a.length()) blockDomains.add(a.getString(i)) }
+            btAuto = o.optBoolean("btAuto"); wifiAuto = o.optBoolean("wifiAuto")
+            autoClean = o.optBoolean("autoClean"); storageAlert = o.optBoolean("storageAlert", true); lastClean = o.optLong("lastClean")
         } catch (e: Exception) {
             defaults(c)
         }
@@ -214,6 +324,18 @@ object Cfg {
             .put("token", token).put("lastAuto", lastAuto)
             .put("pendingFrom", JSONObject(pendingFrom as Map<*, *>)).put("frozenNow", JSONArray(frozenNow.toList()))
             .put("drops", JSONArray(drops.filter { it > System.currentTimeMillis() - 7 * 86_400_000L })).put("shizukuWasUp", shizukuWasUp)
+            .put("netDeny", JSONArray(netDeny.toList()))
+            .put("monitor", monitor).put("blockTrackers", blockTrackers).put("dnsAdguard", dnsAdguard).put("alerts", alerts)
+            .put("blockDomains", JSONArray(blockDomains.toList())).put("allowDomains", JSONArray(allowDomains.toList()))
+            .put("ultraOn", ultraOn).put("ultraAuto", ultraAuto).put("ultraAt", ultraAt).put("chargeGuard", chargeGuard).put("chargeLimit", chargeLimit)
+            .put("designMah", designMah).put("profiles", profiles).put("phantom", phantom).put("notifHistory", notifHistory)
+            .put("quietFrom", quietFrom).put("quietTo", quietTo).put("lastDigest", lastDigest).put("backupTree", backupTree).put("dlAuto", dlAuto)
+            .put("bundleApps", JSONArray(bundleApps.toList())).put("quietApps", JSONArray(quietApps.toList())).put("notifWords", JSONArray(notifWords))
+            .put("travel", travel).put("clipClear", clipClear).put("locked", JSONArray(locked.toList()))
+            .put("sigAt", sigAt).put("avAt", avAt).put("smsGuard", smsGuard).put("wifiGuard", wifiGuard)
+            .put("antiTheft", antiTheft).put("theftTries", theftTries).put("theftSiren", theftSiren).put("avRealtime", avRealtime).put("listsAt", listsAt)
+            .put("btAuto", btAuto).put("wifiAuto", wifiAuto)
+            .put("autoClean", autoClean).put("storageAlert", storageAlert).put("lastClean", lastClean)
         val tmp = File(f.path + ".tmp")
         tmp.writeText(o.toString())
         tmp.renameTo(f)

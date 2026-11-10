@@ -2,9 +2,19 @@
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp" android:height="108dp"
     android:viewportWidth="108" android:viewportHeight="108">
-    <path android:fillColor="#00000000" android:strokeColor="#FF000000" android:strokeWidth="5"
-        android:strokeLineJoin="round"
-        android:pathData="M38,30 L70,30 Q74,30 74,34 L74,82 Q74,86 70,86 L38,86 Q34,86 34,82 L34,34 Q34,30 38,30 Z" />
-    <path android:fillColor="#FF000000" android:pathData="M45,22 L63,22 L63,30 L45,30 Z" />
-    <path android:fillColor="#FF000000" android:pathData="M58,38 L44,60 L53,60 L50,78 L64,54 L55,54 Z" />
+    <!-- telefon -->
+    <path android:fillColor="#00000000" android:strokeColor="#FF000000" android:strokeWidth="4.5" android:strokeLineJoin="round"
+        android:pathData="M41,19 H67 Q76,19 76,28 V80 Q76,89 67,89 H41 Q32,89 32,80 V28 Q32,19 41,19 Z" />
+    <path android:fillColor="#00000000" android:strokeColor="#FF000000" android:strokeWidth="3.5" android:strokeLineCap="round"
+        android:pathData="M32,28.5 H76 M32,79.5 H76 M50,24 H58 M50,84.5 H58" />
+    <!-- surowe brwi i oczy strażnika -->
+    <path android:fillColor="#00000000" android:strokeColor="#FF000000" android:strokeWidth="4" android:strokeLineCap="round"
+        android:pathData="M39,37 L49,42 M69,37 L59,42" />
+    <path android:fillColor="#FF000000"
+        android:pathData="M42.6,47 a3.4,3.4 0 1,0 6.8,0 a3.4,3.4 0 1,0 -6.8,0 M58.6,47 a3.4,3.4 0 1,0 6.8,0 a3.4,3.4 0 1,0 -6.8,0" />
+    <!-- tarcza z ptaszkiem -->
+    <path android:fillColor="#FF000000"
+        android:pathData="M54,55 L62,57.8 L62,63.5 C62,68.5 58.8,71.8 54,74 C49.2,71.8 46,68.5 46,63.5 L46,57.8 Z" />
+    <path android:fillColor="#00000000" android:strokeColor="#FFFFFFFF" android:strokeWidth="2.2" android:strokeLineCap="round" android:strokeLineJoin="round"
+        android:pathData="M50.4,64.2 L53.1,67 L57.8,61.6" />
 </vector>

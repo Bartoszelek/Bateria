@@ -45,16 +45,22 @@ class BatteryService : Service() {
         override fun onReceive(c: Context, i: Intent) {
             when (i.action) {
                 Intent.ACTION_SCREEN_OFF -> {
+                    h.removeCallbacks(lockTick)
+                    AppLock.reset()
+                    Vault.wipeTemp(c)
+                    if (Cfg.clipClear) try { getSystemService(android.content.ClipboardManager::class.java)?.clearPrimaryClip() } catch (e: Exception) {}
                     log(false)
                     Thread { Engine.onScreenOff(c) }.start()
                 }
                 Intent.ACTION_SCREEN_ON -> {
+                    h.removeCallbacks(lockTick); h.postDelayed(lockTick, 500)
                     log(true)
                     Thread { Engine.onScreenOn(c) }.start()
                 }
                 Intent.ACTION_BATTERY_CHANGED -> {
                     level = i.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) * 100 / i.getIntExtra(BatteryManager.EXTRA_SCALE, 100).coerceAtLeast(1)
                     plugged = i.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) != 0
+                    try { Power.onBattery(c, level, plugged, i.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0), i.getIntExtra(BatteryManager.EXTRA_VOLTAGE, 0)) } catch (e: Exception) {}
                     log(getSystemService(PowerManager::class.java)?.isInteractive == true)
                 }
             }
@@ -71,10 +77,10 @@ class BatteryService : Service() {
         super.onCreate()
         Cfg.init(this)
         val nm = getSystemService(NotificationManager::class.java)
-        nm?.createNotificationChannel(NotificationChannel("svc", "Bateria w tle", NotificationManager.IMPORTANCE_MIN))
+        nm?.createNotificationChannel(NotificationChannel("svc", "Bastion w tle", NotificationManager.IMPORTANCE_MIN))
         val n = Notification.Builder(this, "svc")
             .setSmallIcon(Icon.createWithResource(this, R.drawable.ic_bolt))
-            .setContentTitle("Bateria czuwa")
+            .setContentTitle("Bastion czuwa")
             .setContentText("Oszczędzanie po wygaszeniu ekranu")
             .setContentIntent(PendingIntent.getActivity(this, 1, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE))
             .build()
@@ -83,19 +89,97 @@ class BatteryService : Service() {
             addAction(Intent.ACTION_SCREEN_OFF); addAction(Intent.ACTION_SCREEN_ON); addAction(Intent.ACTION_BATTERY_CHANGED)
         })
         alive = true
+        // nowe aplikacje: trackery, uprawnienia, antywirus
+        registerReceiver(pkgRx, IntentFilter(Intent.ACTION_PACKAGE_ADDED).apply { addDataScheme("package") })
+        watchDownloads()
+        h.postDelayed(lockTick, 1000)
+        if (Cfg.monitor) NetBlock.monitor(this, true)
         try {
             Shizuku.addBinderReceivedListenerSticky(onUp)
             Shizuku.addBinderDeadListener(onDown)
         } catch (e: Throwable) {}
         h.postDelayed(watch, 60_000)
+        // gdy telefon złapie Wi-Fi, a Shizuku nie działa – przygotuj uruchomienie i przypomnij
+        try {
+            getSystemService(android.net.ConnectivityManager::class.java)?.registerNetworkCallback(
+                android.net.NetworkRequest.Builder().addTransportType(android.net.NetworkCapabilities.TRANSPORT_WIFI).build(), wifiCb)
+        } catch (e: Exception) {}
+        Sys.keepAdb(this)
         Thread {
             Engine.reapply()
             Engine.scheduleNight(this)
+            Engine.scheduleClean(this)
+            Engine.scheduleDigest(this)
+            if (Cfg.phantom) Power.phantomFix(true)
             Engine.autoByUsage(this)
         }.start()
     }
 
     private val h = android.os.Handler(android.os.Looper.getMainLooper())
+
+    /** Blokada aplikacji: co pół sekundy sprawdzamy, co jest na ekranie (tylko gdy coś jest zablokowane). */
+    private val lockTick = object : Runnable {
+        override fun run() {
+            if (Cfg.locked.isNotEmpty()) { try { AppLock.tick(this@BatteryService) } catch (e: Exception) {}; h.postDelayed(this, 500) }
+            else h.postDelayed(this, 5000)
+        }
+    }
+
+    private val pkgRx = object : BroadcastReceiver() {
+        override fun onReceive(c: Context, i: Intent) {
+            val pkg = i.data?.schemeSpecificPart ?: return
+            if (i.getBooleanExtra(Intent.EXTRA_REPLACING, false) || pkg == packageName) return
+            Thread {
+                try {
+                    if (Cfg.alerts) Alerts.newApp(c, pkg)
+                    if (Cfg.avRealtime) {
+                        val ai = packageManager.getApplicationInfo(pkg, 0)
+                        Av.quick(c, ai.sourceDir, pkg)?.let { r -> if (r.level >= 1) Alerts.threat(c, r) }
+                    }
+                } catch (e: Exception) {
+                }
+            }.start()
+        }
+    }
+
+    private var dlObserver: android.os.FileObserver? = null
+
+    /** Każdy nowy plik w Pobranych jest od razu sprawdzany. */
+    private fun watchDownloads() {
+        if (!Mem.allFiles()) return
+        val dir = java.io.File(Mem.root, "Download")
+        if (!dir.isDirectory) return
+        dlObserver = object : android.os.FileObserver(dir, android.os.FileObserver.CLOSE_WRITE or android.os.FileObserver.MOVED_TO) {
+            override fun onEvent(event: Int, path: String?) {
+                if (path == null || !Cfg.avRealtime) return
+                val f = java.io.File(dir, path)
+                val ext = path.substringAfterLast('.', "").lowercase()
+                if (ext !in Av.SUSPECT_EXT || path.startsWith(".") || ext == "crdownload") return
+                h.postDelayed({
+                    Thread { try { if (f.exists()) Av.quick(this@BatteryService, f.path, null)?.let { r -> if (r.level >= 1) Alerts.threat(this@BatteryService, r) } } catch (e: Exception) {} }.start()
+                }, 3000)
+            }
+        }.also { it.startWatching() }
+    }
+
+    private val wifiCb = object : android.net.ConnectivityManager.NetworkCallback() {
+        override fun onLost(network: android.net.Network) { Power.onWifiLost() }
+
+        override fun onAvailable(network: android.net.Network) {
+            h.postDelayed({
+                Thread { try { Power.onWifi(this@BatteryService) } catch (e: Exception) {} }.start()
+                if (Cfg.wifiGuard) try {
+                    WifiGuard.current(this@BatteryService)?.let { (lvl, txt) ->
+                        if (lvl == 2 && Cfg.travel) {
+                            Thread { Sh.run("svc wifi disable") }.start()
+                            Alerts.plain(this@BatteryService, 4712, "Tryb podróży: rozłączyłem niebezpieczną sieć Wi-Fi", txt)
+                        } else if (lvl == 2) Alerts.plain(this@BatteryService, 4712, "Niebezpieczna sieć Wi-Fi", txt)
+                    }
+                } catch (e: Exception) {}
+                if (!Sh.granted()) shizukuDown(fromWifi = true)
+            }, 4000)
+        }
+    }
 
     private val onUp = Shizuku.OnBinderReceivedListener { h.postDelayed({ shizukuUp() }, 1500) }
     private val onDown = Shizuku.OnBinderDeadListener { h.post { shizukuDown() } }
@@ -114,6 +198,7 @@ class BatteryService : Service() {
         Cfg.shizukuWasUp = true
         Cfg.save()
         Thread {
+            Sys.keepAdb(this)
             Sys.grantAll(this)          // stałe uprawnienia – działają potem bez Shizuku
             Engine.applyPending()       // zaległe zmiany kategorii
             Engine.reapply()
@@ -121,16 +206,22 @@ class BatteryService : Service() {
         }.start()
     }
 
-    private fun shizukuDown() {
-        if (!Cfg.shizukuWasUp) return
-        Cfg.shizukuWasUp = false
-        Cfg.drops.add(System.currentTimeMillis())
-        Cfg.save()
+    private fun shizukuDown(fromWifi: Boolean = false) {
+        if (!fromWifi) {
+            if (!Cfg.shizukuWasUp) return
+            Cfg.shizukuWasUp = false
+            Cfg.drops.add(System.currentTimeMillis())
+            Cfg.save()
+        }
         val nm = getSystemService(NotificationManager::class.java) ?: return
         nm.createNotificationChannel(NotificationChannel("shizuku", "Shizuku", NotificationManager.IMPORTANCE_DEFAULT))
-        val launch = packageManager.getLaunchIntentForPackage("moe.shizuku.privileged.api") ?: Intent(this, MainActivity::class.java)
+        // od razu przygotuj ponowne uruchomienie: debugowanie bezprzewodowe włączone (gdy jest Wi-Fi)
+        val ready = Sys.wirelessDebugOn(this)
+        val launch = packageManager.getLaunchIntentForPackage(Sys.shizukuPkg(this)) ?: Intent(this, MainActivity::class.java)
         val frozen = Cfg.frozenNow.size
-        val text = "Połącz się z dowolnym Wi-Fi i stuknij, żeby uruchomić Shizuku. Oszczędzanie działa dalej, czekają tylko zamrażanie i zmiany kategorii." +
+        val text = (if (ready) "Debugowanie bezprzewodowe już włączone – stuknij i w Shizuku wybierz „Uruchom”. "
+            else "Połącz się z dowolnym Wi-Fi – Bastion sam włączy debugowanie i da znać. ") +
+            "Oszczędzanie działa dalej, czekają tylko zamrażanie i zmiany kategorii." +
             if (frozen > 0) " Zamrożone aplikacje ($frozen) odmrożą się po uruchomieniu." else ""
         try {
             nm.notify(2, Notification.Builder(this, "shizuku")
@@ -150,8 +241,11 @@ class BatteryService : Service() {
     override fun onDestroy() {
         alive = false
         h.removeCallbacks(watch)
+        try { getSystemService(android.net.ConnectivityManager::class.java)?.unregisterNetworkCallback(wifiCb) } catch (e: Exception) {}
         try { Shizuku.removeBinderReceivedListener(onUp); Shizuku.removeBinderDeadListener(onDown) } catch (e: Throwable) {}
         try { unregisterReceiver(rx) } catch (e: Exception) {}
+        try { unregisterReceiver(pkgRx) } catch (e: Exception) {}
+        try { dlObserver?.stopWatching() } catch (e: Exception) {}
         super.onDestroy()
     }
 }
@@ -171,6 +265,15 @@ class AlarmReceiver : BroadcastReceiver() {
                     a.startsWith("off_") -> Engine.runOff(c, a.removePrefix("off_"))
                     a == "doze" -> if (!Engine.charging(c)) Engine.doze()
                     a == "guard" -> Engine.guardCheck(c)
+                    a == "clean" -> {
+                        Engine.dailyClean(c)
+                        // listy blokowania odświeżane co tydzień
+                        if (Cfg.monitor && System.currentTimeMillis() - Cfg.listsAt > 7 * 86_400_000L) try { Dns.updateLists(c) { } } catch (e: Exception) {}
+                        // bazy sygnatur antywirusa – co 3 dni
+                        if (Sig.ready(c) && System.currentTimeMillis() - Cfg.sigAt > 3 * 86_400_000L) try { Sig.update(c) { } } catch (e: Exception) {}
+                    }
+                    a == "digest" -> { Notif.digest(c); Engine.scheduleDigest(c) }
+                    a == "netdeny" -> i.getStringExtra("pkg")?.let { p -> Priv.setNet(c, p, false) }
                     a == "night_on" -> Engine.night(c, true)
                     a == "night_off" -> Engine.night(c, false)
                     a == "limit" -> {
@@ -185,60 +288,6 @@ class AlarmReceiver : BroadcastReceiver() {
             }
             pending.finish()
         }.start()
-    }
-}
-
-/** Blokada internetu w tle: lokalny VPN, przez który puszczamy tylko wybrane aplikacje i odrzucamy ich ruch. */
-class NetBlock : VpnService() {
-    companion object {
-        @Volatile private var fd: ParcelFileDescriptor? = null
-
-        fun start(c: Context) {
-            if (VpnService.prepare(c) != null) return // brak zgody – użytkownik musi włączyć w aplikacji
-            try { c.startService(Intent(c, NetBlock::class.java).setAction("start")) } catch (e: Exception) {}
-        }
-
-        fun stop(c: Context) {
-            if (fd == null) return
-            try { c.startService(Intent(c, NetBlock::class.java).setAction("stop")) } catch (e: Exception) {}
-        }
-    }
-
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        Cfg.init(this)
-        if (intent?.action == "stop") {
-            try { fd?.close() } catch (e: Exception) {}
-            fd = null
-            stopSelf()
-            return START_NOT_STICKY
-        }
-        if (fd != null) return START_NOT_STICKY
-        val blocked = (Engine.pkgs(Cat.BG) + Engine.pkgs(Cat.OFF)).distinct()
-        if (blocked.isEmpty()) { stopSelf(); return START_NOT_STICKY }
-        val b = Builder().setSession("Bateria – blokada sieci w tle")
-            .addAddress("10.111.0.1", 32).addAddress("fd00:111::1", 128)
-            .addRoute("0.0.0.0", 0).addRoute("::", 0)
-            .setBlocking(true)
-        var any = false
-        for (p in blocked) try { b.addAllowedApplication(p); any = true } catch (e: Exception) {}
-        if (!any) { stopSelf(); return START_NOT_STICKY }
-        val f = try { b.establish() } catch (e: Exception) { null } ?: run { stopSelf(); return START_NOT_STICKY }
-        fd = f
-        // czytamy i wyrzucamy pakiety – aplikacje na liście nie mają internetu
-        Thread {
-            val buf = ByteArray(32767)
-            try {
-                FileInputStream(f.fileDescriptor).use { inp -> while (fd === f) { if (inp.read(buf) < 0) break } }
-            } catch (e: Exception) {
-            }
-        }.start()
-        return START_NOT_STICKY
-    }
-
-    override fun onRevoke() {
-        try { fd?.close() } catch (e: Exception) {}
-        fd = null
-        super.onRevoke()
     }
 }
 

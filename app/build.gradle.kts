@@ -43,6 +43,9 @@ android {
 
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.exifinterface:exifinterface:1.3.7")
+    // filtry Blooma z bazami sygnatur antywirusa (format Hypatia / LoveLaceAV)
+    implementation("com.google.guava:guava:33.3.1-android")
     implementation("dev.rikka.shizuku:api:13.1.5")
     implementation("dev.rikka.shizuku:provider:13.1.5")
 }

@@ -175,8 +175,8 @@ object Engine {
         if (pkgs(Cat.FZ1).isNotEmpty()) later(c, "off_" + Cat.FZ1, 62, d[Cat.FZ1] ?: 5)
         if (pkgs(Cat.FZ2).isNotEmpty()) later(c, "off_" + Cat.FZ2, 63, d[Cat.FZ2] ?: 30)
         if (Cfg.deepDoze && !charging(c)) later(c, "doze", 64, 1)
-        if (Cfg.netBlock) NetBlock.start(c)
-        if (Cfg.guard) later(c, "guard", 65, 15)
+        NetBlock.screen(c, true)
+        if (Cfg.guard || Cfg.btAuto || Cfg.wifiAuto || Cfg.alerts) later(c, "guard", 65, 15)
     }
 
     /** Wykonuje działanie kategorii po wygaszeniu (alarm). */
@@ -205,7 +205,7 @@ object Engine {
             "cmd appops set $p WAKE_LOCK default", "am set-standby-bucket $p active")
         appliedOff.clear()
         cmds.chunked(40).forEach { Sh.runAll(it) }
-        NetBlock.stop(c)
+        NetBlock.screen(c, false)
     }
 
     fun doze() = Sh.run("dumpsys deviceidle force-idle")
@@ -326,7 +326,9 @@ object Engine {
     private val warned = HashMap<String, Long>()
 
     fun guardCheck(c: Context) {
-        if (!Cfg.guard) return
+        try { radiosCheck(c) } catch (e: Exception) {}
+        if (Cfg.alerts) { try { Alerts.sensorCheck(c) } catch (e: Exception) {}; try { Alerts.permCheck(c) } catch (e: Exception) {} }
+        if (!Cfg.guard) { if (Cfg.btAuto || Cfg.wifiAuto || Cfg.alerts) later(c, "guard", 65, 15); return }
         val txt = Sys.dump(c, "power")
         val rx = Regex("""PARTIAL_WAKE_LOCK\s+'([^']*)'.*?ACQ=-([0-9hdms]+)\s.*?uid=(\d+)""")
         val uids = uidMap(c)
@@ -341,7 +343,7 @@ object Engine {
             warned[pkg] = System.currentTimeMillis()
             notifyGuard(c, pkg, ms)
         }
-        if (Cfg.guard) later(c, "guard", 65, 15)
+        if (Cfg.guard || Cfg.btAuto || Cfg.wifiAuto || Cfg.alerts) later(c, "guard", 65, 15)
     }
 
     private fun dur(s: String): Long {
@@ -434,4 +436,100 @@ object Engine {
 
     @Suppress("unused")
     fun debugJson(): String = JSONObject().put("cats", Cfg.cats.size).toString()
+
+    // ------------------------------------------------------------ automatyczne czyszczenie i ostrzeżenie o miejscu
+    fun scheduleClean(c: Context) {
+        val am = c.getSystemService(AlarmManager::class.java) ?: return
+        am.cancel(pi(c, "clean", 81))
+        if (Cfg.autoClean || Cfg.storageAlert) am.setInexactRepeating(AlarmManager.RTC, System.currentTimeMillis() + 3600_000L, AlarmManager.INTERVAL_DAY, pi(c, "clean", 81))
+    }
+
+    fun dailyClean(c: Context) {
+        val nm = c.getSystemService(NotificationManager::class.java) ?: return
+        nm.createNotificationChannel(NotificationChannel("mem", "Pamięć", NotificationManager.IMPORTANCE_DEFAULT))
+        fun note(id: Int, t: String, s: String) = try {
+            nm.notify(id, android.app.Notification.Builder(c, "mem").setSmallIcon(android.graphics.drawable.Icon.createWithResource(c, R.drawable.ic_bolt))
+                .setContentTitle(t).setContentText(s).setAutoCancel(true)
+                .setContentIntent(PendingIntent.getActivity(c, 82, Intent(c, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)).build())
+        } catch (e: SecurityException) {}
+        if (Cfg.autoClean && System.currentTimeMillis() - Cfg.lastClean > 6 * 86_400_000L && Mem.allFiles()) {
+            val st = android.os.StatFs(android.os.Environment.getDataDirectory().path)
+            val before = st.availableBytes
+            Mem.trimAllCaches()
+            Mem.scan { }
+            val safe = Mem.junk(c).filter { it.label.startsWith("Miniatury") || it.label.startsWith("Pliki tymczasowe") || it.label.startsWith("Puste") }
+            Mem.cleanJunk(c, safe)
+            Mem.emptyTrash(30)
+            val freed = (android.os.StatFs(android.os.Environment.getDataDirectory().path).availableBytes - before).coerceAtLeast(0)
+            Cfg.lastClean = System.currentTimeMillis(); Cfg.save()
+            note(83, "Cotygodniowe czyszczenie", "Zwolniono ${Mem.fmt(freed)}")
+        }
+        // stare pobrane → kosz (30 dni na przywrócenie)
+        if (Cfg.dlAuto && Mem.allFiles()) try {
+            if (Mem.scannedAt < System.currentTimeMillis() - 3600_000L) Mem.scan { }
+            val old = Mem.oldDownloads(60)
+            if (old.isNotEmpty()) note(85, "Posprzątałem Pobrane", "${old.size} plików starszych niż 60 dni trafiło do kosza (${Mem.fmt(Mem.toTrash(c, old.map { it.path }))}).")
+        } catch (e: Exception) {}
+                if (Cfg.storageAlert) {
+            val st = android.os.StatFs(android.os.Environment.getDataDirectory().path)
+            if (st.availableBytes < st.totalBytes / 10) note(84, "Kończy się miejsce", "Wolne tylko ${Mem.fmt(st.availableBytes)} – otwórz Pamięć i wyczyść duplikaty, duże pliki lub śmieci.")
+        }
+    }
+
+    // ------------------------------------------------------------ Wi-Fi i Bluetooth
+    fun bluetooth(on: Boolean) {
+        val r = Sh.run("svc bluetooth ${if (on) "enable" else "disable"}")
+        if (r.contains("Unknown", true) || r.contains("usage", true)) Sh.run("cmd bluetooth_manager ${if (on) "enable" else "disable"}")
+    }
+
+    /** Czy jakiekolwiek urządzenie Bluetooth jest połączone (słuchawki, auto, zegarek…). */
+    private fun btConnected(c: Context): Boolean {
+        val bm = c.getSystemService(android.bluetooth.BluetoothManager::class.java) ?: return true
+        val ad = bm.adapter ?: return false
+        if (!ad.isEnabled) return false
+        return try {
+            val profiles = listOf(android.bluetooth.BluetoothProfile.A2DP, android.bluetooth.BluetoothProfile.HEADSET, 21, 22, 4)
+            if (profiles.any { p -> try { ad.getProfileConnectionState(p) != android.bluetooth.BluetoothProfile.STATE_DISCONNECTED } catch (e: Exception) { false } }) return true
+            bm.getConnectedDevices(android.bluetooth.BluetoothProfile.GATT).isNotEmpty()
+        } catch (e: SecurityException) {
+            // bez uprawnienia sprawdzamy przez system
+            Sh.run("dumpsys bluetooth_manager").contains("STATE_CONNECTED")
+        }
+    }
+
+    /** Wywoływane co 15 min przy wygaszonym ekranie. */
+    fun radiosCheck(c: Context) {
+        val off = c.getSystemService(android.os.PowerManager::class.java)?.isInteractive == false
+        if (!off) return
+        if (Cfg.btAuto) {
+            if (btConnected(c)) Cfg.prev.remove("btIdle")
+            else {
+                val since = Cfg.prev["btIdle"]?.toLongOrNull() ?: System.currentTimeMillis().also { Cfg.prev["btIdle"] = it.toString() }
+                val bm = c.getSystemService(android.bluetooth.BluetoothManager::class.java)
+                if (bm?.adapter?.isEnabled == true && System.currentTimeMillis() - since >= 10 * 60_000L) { bluetooth(false); Cfg.prev.remove("btIdle") }
+            }
+        }
+        if (Cfg.wifiAuto) {
+            val wm = c.applicationContext.getSystemService(android.net.wifi.WifiManager::class.java)
+            val cm = c.getSystemService(android.net.ConnectivityManager::class.java)
+            val onWifi = cm?.getNetworkCapabilities(cm.activeNetwork)?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) == true
+            if (wm?.isWifiEnabled == true && !onWifi) {
+                val since = Cfg.prev["wifiIdle"]?.toLongOrNull() ?: System.currentTimeMillis().also { Cfg.prev["wifiIdle"] = it.toString() }
+                if (System.currentTimeMillis() - since >= 15 * 60_000L) { Sh.run("svc wifi disable"); Cfg.prev.remove("wifiIdle") }
+            } else Cfg.prev.remove("wifiIdle")
+        }
+        Cfg.save()
+    }
+
+    // ------------------------------------------------------------ paczki powiadomień: 9:00, 13:00, 18:00
+    fun scheduleDigest(c: Context) {
+        val am = c.getSystemService(AlarmManager::class.java) ?: return
+        am.cancel(pi(c, "digest", 91))
+        if (Cfg.bundleApps.isEmpty()) return
+        val now = Calendar.getInstance()
+        val next = listOf(9, 13, 18).map { h ->
+            Calendar.getInstance().apply { set(Calendar.HOUR_OF_DAY, h); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); if (!after(now)) add(Calendar.DAY_OF_YEAR, 1) }.timeInMillis
+        }.minOrNull() ?: return
+        am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, next, pi(c, "digest", 91))
+    }
 }
