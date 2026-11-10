@@ -128,13 +128,29 @@ object Tools {
             val ai = try { pm.getApplicationInfo(p, 0) } catch (e: Exception) { continue }
             val sys = ai.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM != 0 && ai.flags and android.content.pm.ApplicationInfo.FLAG_UPDATED_SYSTEM_APP == 0
             if (sys && !withSystem) continue
-            val on = l.any { pm.getComponentEnabledSetting(ComponentName(p, it.name)).let { st -> st != PackageManager.COMPONENT_ENABLED_STATE_DISABLED && st != PackageManager.COMPONENT_ENABLED_STATE_DISABLED_USER } }
+            val comp = l.any { pm.getComponentEnabledSetting(ComponentName(p, it.name)).let { st -> st != PackageManager.COMPONENT_ENABLED_STATE_DISABLED && st != PackageManager.COMPONENT_ENABLED_STATE_DISABLED_USER } }
+            // aplikacja ograniczona w tle albo zamrożona nie dostaje sygnału startu telefonu
+            val on = comp && Cfg.cat(p).let { it != Cat.BG && it != Cat.FZP } && p !in Cfg.bootOff
             out.add(Boot(p, pm.getApplicationLabel(ai).toString(), l.map { it.name }, on, sys))
         }
         return out.sortedWith(compareBy<Boot> { !it.enabled }.thenBy { it.label.lowercase() })
     }
 
-    fun setAutostart(b: Boot, on: Boolean) = Sh.runAll(b.receivers.map { "pm ${if (on) "enable" else "disable"} '${b.pkg}/$it'" })
+    /**
+     * Android nie pozwala już wyłączać pojedynczych składników cudzych aplikacji. Autostart blokujemy więc ograniczeniem tła:
+     * od Androida 13 taka aplikacja nie dostaje sygnału „telefon się uruchomił”, dopóki sam jej nie otworzysz.
+     */
+    fun setAutostart(c: Context, b: Boot, on: Boolean) {
+        if (on) {
+            Cfg.bootOff.remove(b.pkg)
+            if (Cfg.cat(b.pkg) == Cat.BG) Engine.setCat(c, listOf(b.pkg), Cat.NORMAL)
+            else Sh.runAll(listOf("cmd appops set ${b.pkg} RUN_ANY_IN_BACKGROUND default", "am set-standby-bucket ${b.pkg} active"))
+        } else {
+            Cfg.bootOff.add(b.pkg)
+            Sh.runAll(listOf("cmd appops set ${b.pkg} RUN_ANY_IN_BACKGROUND ignore", "am set-standby-bucket ${b.pkg} restricted", "am force-stop ${b.pkg}"))
+        }
+        Cfg.save()
+    }
 
     // ------------------------------------------------------------ mapa pamięci (foldery wg rozmiaru)
     fun folders(path: String): List<Pair<String, Long>> {

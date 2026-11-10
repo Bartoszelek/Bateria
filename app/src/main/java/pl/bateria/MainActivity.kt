@@ -1539,7 +1539,12 @@ class MainActivity : Activity() {
             val enable = compsOff == comps.size
             work(if (enable) "Włączam…" else "Wyłączam…") {
                 Priv.setTrackerComponents(pkg, comps.map { it.first }, enable)
-                if (enable) "Składniki włączone" else "Wyłączono ${comps.size} składników. Gdyby aplikacja zaczęła się zawieszać – włącz je z powrotem."
+                val after = Priv.trackerComponents(this, pkg).count { !it.second }
+                when {
+                    enable -> "Składniki włączone"
+                    after == 0 -> "Android nie pozwala wyłączać składników tej aplikacji. Użyj „Zablokuj trackery w sieci” – efekt jest ten sam."
+                    else -> "Wyłączono $after składników. Gdyby aplikacja zaczęła się zawieszać – włącz je z powrotem."
+                }
             }
         }, lp(-2, -2, top = 8))
         if (comps.isNotEmpty()) col.addView(tv(comps.joinToString("\n") { (if (it.second) "• " else "✕ ") + it.first.substringAfterLast('.') + "  (" + it.first.substringBeforeLast('.').takeLast(40) + ")" }, 11f, color = DIM), lp(top = 6))
@@ -1860,21 +1865,27 @@ class MainActivity : Activity() {
 
     private fun renderBoot() {
         backRow("Autostart")
-        col.addView(tv("Aplikacje, które uruchamiają się same po włączeniu telefonu i działają w tle. Wyłączenie autostartu nie przeszkadza w normalnym używaniu – aplikacja ruszy, gdy ją otworzysz. Komunikatorom i budzikom zostaw włączony.", 13f, color = DIM), lp(top = 4))
+        col.addView(tv("Aplikacje, które uruchamiają się same po włączeniu telefonu. Wyłączenie działa przez ograniczenie pracy w tle: aplikacja nie startuje z telefonem i nie działa w tle, dopóki jej nie otworzysz – po otwarciu działa normalnie. Komunikatorom, bankom i budzikom zostaw włączony, bo przestaną przychodzić ich powiadomienia.", 13f, color = DIM), lp(top = 4))
         val l = bootList ?: run {
             col.addView(tv("Wczytuję…", 14f, color = DIM), lp(top = 10))
             Thread { val x = Tools.autostart(this, withSystem); h.post { bootList = x; if (memSub == "boot") render() } }.start(); return
         }
         col.addView(tv("${l.count { it.enabled }} z ${l.size} startuje z telefonem", 14f, true), lp(top = 8))
-        val off = l.filter { it.enabled && Cfg.cat(it.pkg) != Cat.PROTECT && !it.system }
-        if (off.isNotEmpty()) col.addView(btn("Wyłącz wszystkim poza chronionymi (${off.size})", true) {
+        // hurtowo tylko aplikacjom, których nie otwierałeś od tygodnia i które nie są preinstalowane – reszcie pojedynczo
+        val use = Apps.usage(this, 30)
+        val week = System.currentTimeMillis() - 7 * 86_400_000L
+        val off = l.filter { b ->
+            b.enabled && Cfg.cat(b.pkg) != Cat.PROTECT && !b.system && (use[b.pkg] ?: 0L) < week &&
+                try { packageManager.getApplicationInfo(b.pkg, 0).flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM == 0 } catch (e: Exception) { false }
+        }
+        if (off.isNotEmpty()) col.addView(btn("Wyłącz nieużywanym od tygodnia (${off.size})", true) {
             if (needShizuku()) return@btn
-            work("Wyłączam…") { off.forEach { Tools.setAutostart(it, false) }; bootList = null; "Wyłączono autostart ${off.size} aplikacjom" }
+            work("Wyłączam…") { off.forEach { Tools.setAutostart(this, it, false) }; bootList = null; "Wyłączono autostart ${off.size} aplikacjom" }
         }, lp(-2, -2, top = 8))
         for (b in l) col.addView(appIconRow(b.pkg, b.label, if (Cfg.cat(b.pkg) == Cat.PROTECT) "chroniona" else if (b.system) "systemowa" else "",
             if (b.enabled) "STARTUJE" else "wyłączony", if (b.enabled) WARN else ACC) {
             if (needShizuku()) return@appIconRow
-            work(null) { Tools.setAutostart(b, !b.enabled); bootList = null; null }
+            work(null) { Tools.setAutostart(this, b, !b.enabled); bootList = null; if (b.enabled) "Autostart wyłączony: ${b.label}" else "Autostart włączony: ${b.label}" }
         })
     }
 
