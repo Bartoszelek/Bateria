@@ -249,6 +249,7 @@ object MyApps {
         A("Notatnik", "pl.notatnik", "Bartoszelek/notatnik"),
         A("Player", "pl.konwerter", "Bartoszelek/konwerter"),
         A("Biuro", "pl.biuro", "Bartoszelek/biuro"),
+        A("Świt", "pl.swit", "Bartoszelek/swit"),
         A("E-ink Launcher", "pl.einklauncher", "Bartoszelek/einklauncher")
     )
 

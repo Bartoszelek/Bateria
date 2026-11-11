@@ -57,13 +57,21 @@ class MainActivity : Activity() {
     private var updStatus: TextView? = null
     private val ACTION_INSTALL = "pl.bateria.INSTALL_RESULT"
 
-    private val BG = 0xFF101010.toInt()
-    private val SURF = 0xFF1C1C1E.toInt()
-    private val FG = Color.WHITE
-    private val DIM = 0xFF9A9A9E.toInt()
-    private val LINE = 0xFF2C2C2E.toInt()
-    private val ACC = 0xFF4CD964.toInt()
+    private val BG get() = Theme.bg
+    private val SURF get() = Theme.surface
+    private val FG get() = Theme.fg
+    private val DIM get() = Theme.dim
+    private val LINE get() = Theme.line
+    private val ACC get() = Theme.accent
     private val WARN = 0xFFFF9F0A.toInt()
+    private lateinit var rootView: LinearLayout
+
+    private fun applyTheme() {
+        Theme.apply(this, Cfg.theme, Cfg.mode)
+        window.statusBarColor = Theme.bg; window.navigationBarColor = Theme.surface
+        @Suppress("DEPRECATION")
+        window.decorView.systemUiVisibility = if (Theme.dark) 0 else (View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR)
+    }
 
     private val permListener = Shizuku.OnRequestPermissionResultListener { _, _ -> h.post { onShizukuReady() } }
 
@@ -72,14 +80,16 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Cfg.init(this)
+        applyTheme()
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(BG) }
+        rootView = root
         sv = ScrollView(this).apply { isFillViewport = true }
         col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(16), dp(20), dp(40)) }
         sv.addView(col)
         root.addView(sv, LinearLayout.LayoutParams(-1, 0, 1f))
         actionBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            setBackgroundColor(0xFF233323.toInt()); setPadding(dp(16), dp(10), dp(12), dp(10)); visibility = View.GONE
+            setBackgroundColor(Theme.soft); setPadding(dp(16), dp(10), dp(12), dp(10)); visibility = View.GONE
         }
         root.addView(actionBar, LinearLayout.LayoutParams(-1, -2))
         root.addView(tabBar())
@@ -149,8 +159,8 @@ class MainActivity : Activity() {
 
     private fun btn(t: String, primary: Boolean = false, f: () -> Unit) = TextView(this).apply {
         text = t; textSize = 15f; gravity = Gravity.CENTER
-        setTextColor(if (primary) Color.BLACK else FG)
-        background = if (primary) round(FG, 24) else round(SURF, 24, 1)
+        setTextColor(if (primary) Theme.onAccent else FG)
+        background = if (primary) Theme.gradient(dp(24).toFloat()) else round(SURF, 24, 1)
         setPadding(dp(18), dp(12), dp(18), dp(12))
         setOnClickListener { f() }
     }
@@ -226,9 +236,9 @@ class MainActivity : Activity() {
         tabs.removeAllViews()
         for ((k, n) in listOf("save" to "Bateria", "apps" to "Aplikacje", "use" to "Zużycie", "mem" to "Pamięć", "notif" to "Powiad.", "priv" to "Ochrona")) {
             val on = k == tab
-            tabs.addView(tv(n, 11f, on, if (on) Color.BLACK else DIM).apply {
+            tabs.addView(tv(n, 11f, on, if (on) Theme.onAccent else DIM).apply {
                 gravity = Gravity.CENTER; maxLines = 1
-                background = if (on) round(FG, 18) else null
+                background = if (on) Theme.gradient(dp(18).toFloat()) else null
                 setPadding(0, dp(10), 0, dp(10))
                 setOnClickListener { tab = k; sel.clear(); selMode = false; memSub = ""; memSel.clear(); privSub = ""; render(); sv.scrollTo(0, 0) }
             }, lp(0, -2, 1f).apply { leftMargin = dp(2); rightMargin = dp(2) })
@@ -237,6 +247,7 @@ class MainActivity : Activity() {
 
     private fun render() {
         val y = sv.scrollY
+        rootView.setBackgroundColor(BG); tabs.setBackgroundColor(SURF)
         col.removeAllViews()
         drawTabs()
         drawActionBar()
@@ -253,8 +264,19 @@ class MainActivity : Activity() {
 
     // ------------------------------------------------------------ zakładka: oszczędzanie
     private fun renderSave() {
-        col.addView(tv("Bastion", 34f, true))
-        col.addView(tv("bateria · pamięć · prywatność", 13f, color = DIM))
+        val hero = hbox().apply { background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(Theme.blend(SURF, Theme.accent, 0.18f), Theme.blend(SURF, Theme.accent2, 0.10f))).apply { cornerRadius = dp(28).toFloat() }; setPadding(dp(18), dp(16), dp(18), dp(16)) }
+        val hl = vbox()
+        hl.addView(tv("Bastion", 30f, true))
+        hl.addView(tv("bateria · pamięć · prywatność", 13f, color = DIM))
+        val bmH = getSystemService(BatteryManager::class.java)
+        val lvlH = bmH?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: 0
+        val (offH, _) = try { Engine.drain(this) } catch (e: Exception) { Pair(0.0, 0.0) }
+        val leftH = if (offH > 0.05 && bmH?.isCharging != true) " · ok. ${(lvlH / offH).toInt()} h w uśpieniu" else ""
+        hl.addView(tv((if (bmH?.isCharging == true) "⚡ Ładowanie" else "Na baterii") + leftH, 13f, true, ACC), lp(top = 10))
+        hl.addView(tv(if (Sh.granted()) "🛡 Shizuku aktywne" else "Shizuku wyłączone", 12f, color = DIM), lp(top = 2))
+        hero.addView(hl, lp(0, -2, 1f))
+        hero.addView(ProgressRing(this).apply { big = "$lvlH%"; small = "bateria"; value = lvlH / 100f }, LinearLayout.LayoutParams(dp(124), dp(124)))
+        col.addView(hero)
         val upd = update
         if (upd != null) {
             val box = hbox().apply { background = round(SURF, 18); setPadding(dp(16), dp(12), dp(12), dp(12)) }
@@ -426,6 +448,22 @@ class MainActivity : Activity() {
         }
         col.addView(line(), lp(-1, 1))
         row("Kafelek „Oszczędzanie”", "Dodasz go w szybkich ustawieniach: przeciągnij panel w dół → ołówek → przeciągnij kafelek.", null)
+
+        header("Wygląd")
+        val tr = hbox()
+        for (pz in Theme.PRESETS) {
+            val (c1, c2) = Theme.colorsOf(this, pz)
+            val on = Cfg.theme == pz.id
+            val chip = vbox().apply { gravity = Gravity.CENTER_HORIZONTAL; setPadding(dp(4), dp(4), dp(4), dp(4)) }
+            chip.addView(View(this).apply { background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(c1, c2)).apply { shape = GradientDrawable.OVAL; if (on) setStroke(dp(3), FG) } }, LinearLayout.LayoutParams(dp(44), dp(44)))
+            chip.addView(tv(pz.name, 11f, on, if (on) FG else DIM))
+            chip.setOnClickListener { Cfg.theme = pz.id; Cfg.save(); applyTheme(); render() }
+            tr.addView(chip, LinearLayout.LayoutParams(dp(78), -2))
+        }
+        col.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(tr) }, lp(top = 6))
+        val mr = hbox()
+        for ((k, n) in Theme.MODES) mr.addView(btn(n, Cfg.mode == k) { Cfg.mode = k; Cfg.save(); applyTheme(); render() }, lp(-2, -2).apply { rightMargin = dp(6) })
+        col.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(mr) }, lp(top = 8))
 
         header("Kopia ustawień")
         val bk = hbox()
@@ -606,8 +644,8 @@ class MainActivity : Activity() {
             fun hours(label: String, cur: Int, f: (Int) -> Unit) {
                 c.addView(tv(label, 14f, color = DIM), lp(top = 12))
                 val r = hbox()
-                for (hh in listOf(20, 21, 22, 23, 0, 1, 5, 6, 7, 8)) r.addView(tv("$hh", 15f, hh == cur, if (hh == cur) Color.BLACK else FG).apply {
-                    gravity = Gravity.CENTER; background = if (hh == cur) round(FG, 14) else round(BG, 14, 1)
+                for (hh in listOf(20, 21, 22, 23, 0, 1, 5, 6, 7, 8)) r.addView(tv("$hh", 15f, hh == cur, if (hh == cur) Theme.onAccent else FG).apply {
+                    gravity = Gravity.CENTER; background = if (hh == cur) Theme.gradient(dp(14).toFloat()) else round(BG, 14, 1)
                     setPadding(dp(12), dp(8), dp(12), dp(8)); setOnClickListener { f(hh); d.dismiss(); nightSheet() }
                 }, lp(-2, -2).apply { rightMargin = dp(6) })
                 c.addView(HorizontalScrollView(this).apply { addView(r) }, lp(top = 4))
@@ -720,7 +758,7 @@ class MainActivity : Activity() {
     private fun appRow(a: App, cat: String, pm: android.content.pm.PackageManager): View {
         val r = hbox().apply { setPadding(dp(6), dp(8), dp(6), dp(8)) }
         val on = a.pkg in sel
-        if (on) r.background = round(0xFF2E3B2E.toInt(), 12, 1, ACC)
+        if (on) r.background = round(Theme.soft, 12, 1, ACC)
         if (selMode) r.addView(tv(if (on) "☑" else "☐", 22f, true, if (on) ACC else DIM).apply { setPadding(0, 0, dp(10), 0) })
         val iv = ImageView(this).apply { setImageDrawable(Apps.icon(this@MainActivity, a.pkg)) }
         r.addView(iv, LinearLayout.LayoutParams(dp(36), dp(36)))
@@ -757,7 +795,7 @@ class MainActivity : Activity() {
         v.setOnDragListener { view, e ->
             when (e.action) {
                 DragEvent.ACTION_DRAG_STARTED -> true
-                DragEvent.ACTION_DRAG_ENTERED -> { view.background = round(0xFF233323.toInt(), 18, 2, ACC); true }
+                DragEvent.ACTION_DRAG_ENTERED -> { view.background = round(Theme.soft, 18, 2, ACC); true }
                 DragEvent.ACTION_DRAG_EXITED -> { view.background = round(SURF, 18); true }
                 DragEvent.ACTION_DRAG_LOCATION -> {
                     val loc = IntArray(2); view.getLocationOnScreen(loc)
@@ -1024,7 +1062,8 @@ class MainActivity : Activity() {
         val ov = overview
         val st = android.os.StatFs(android.os.Environment.getDataDirectory().path)
         val used = st.totalBytes - st.availableBytes
-        col.addView(tv("${Mem.fmt(used)} z ${Mem.fmt(st.totalBytes)} zajęte · wolne ${Mem.fmt(st.availableBytes)}", 15f, true), lp(top = 12))
+        col.addView(ProgressRing(this).apply { big = "${(used * 100 / st.totalBytes.coerceAtLeast(1))}%"; small = "zajęte"; value = used.toFloat() / st.totalBytes.coerceAtLeast(1) }, lp(-1, dp(160), top = 8))
+        col.addView(tv("${Mem.fmt(used)} z ${Mem.fmt(st.totalBytes)} zajęte · wolne ${Mem.fmt(st.availableBytes)}", 15f, true).apply { gravity = Gravity.CENTER }, lp(top = 8))
         val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; background = round(LINE, 8) }
         val colors = listOf(0xFF4CD964.toInt(), 0xFF5AC8FA.toInt(), 0xFFFF9F0A.toInt(), 0xFFAF52DE.toInt(), 0xFFFF375F.toInt(), 0xFFFFD60A.toInt(), 0xFF8E8E93.toInt(), 0xFF636366.toInt())
         if (ov != null) {
@@ -1674,7 +1713,10 @@ class MainActivity : Activity() {
         privBack("Raport bezpieczeństwa")
         val l = report ?: emptyList()
         val sc = Security.score(l)
-        col.addView(tv("$sc / 100", 44f, true, if (sc >= 85) ACC else if (sc >= 65) WARN else 0xFFFF453A.toInt()), lp(top = 8))
+        col.addView(ProgressRing(this).apply {
+            big = "$sc"; small = "na 100"; value = sc / 100f
+            if (sc < 65) { color1 = 0xFFFF453A.toInt(); color2 = 0xFFFF9F0A.toInt() } else if (sc < 85) { color1 = WARN; color2 = 0xFFFFD60A.toInt() }
+        }, lp(-1, dp(170), top = 8))
         col.addView(tv("${l.count { it.level == 2 }} ryzyk · ${l.count { it.level == 1 }} uwag · ${l.count { it.level == 0 }} w porządku", 13f, color = DIM))
         val r = hbox()
         r.addView(btn("Eksport do PDF", true) {
@@ -2279,9 +2321,9 @@ class Chart(c: Context, private val pts: List<Engine.Point>) : View(c) {
         super.onDraw(cv)
         val w = width.toFloat(); val hh = height.toFloat()
         val now = System.currentTimeMillis(); val from = now - 86_400_000L
-        p.style = Paint.Style.FILL; p.color = 0xFF1C1C1E.toInt()
+        p.style = Paint.Style.FILL; p.color = Theme.surface
         cv.drawRoundRect(0f, 0f, w, hh, 24f, 24f, p)
-        p.color = 0xFF2C2C2E.toInt(); p.strokeWidth = 2f
+        p.color = Theme.line; p.strokeWidth = 2f
         for (k in 1..3) cv.drawLine(0f, hh * k / 4, w, hh * k / 4, p)
         val list = pts.filter { it.t >= from - 3600_000L }
         if (list.size < 2) {
@@ -2292,13 +2334,13 @@ class Chart(c: Context, private val pts: List<Engine.Point>) : View(c) {
         fun y(l: Int) = hh - (l / 100f) * (hh - 16f) - 8f
         for (i in 1 until list.size) {
             val a = list[i - 1]; val b = list[i]
-            p.color = when { a.charging -> 0x334CD964; a.screen -> 0x22FFFFFF; else -> 0 }
+            p.color = when { a.charging -> Theme.withAlpha(Theme.accent, 0.20f); a.screen -> Theme.withAlpha(Theme.fg, 0.08f); else -> 0 }
             if (p.color != 0) cv.drawRect(x(a.t), 0f, x(b.t), hh, p)
         }
         val path = Path()
         list.forEachIndexed { i, pt -> if (i == 0) path.moveTo(x(pt.t), y(pt.level)) else path.lineTo(x(pt.t), y(pt.level)) }
         path.lineTo(w, y(list.last().level))
-        p.style = Paint.Style.STROKE; p.strokeWidth = 5f; p.color = 0xFF4CD964.toInt()
+        p.style = Paint.Style.STROKE; p.strokeWidth = 5f; p.color = Theme.accent
         cv.drawPath(path, p)
         p.style = Paint.Style.FILL; p.color = 0xFF9A9A9E.toInt(); p.textSize = 26f
         cv.drawText("-24 h", 12f, hh - 10f, p); cv.drawText("teraz", w - 70f, hh - 10f, p); cv.drawText("100%", 12f, 30f, p)
