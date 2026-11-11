@@ -15,10 +15,11 @@ android {
         targetSdk = 34
         versionCode = runNumber
         versionName = "1.$runNumber"
-        // wersja do udostępniania (-Ppublic=true): bez „Moich aplikacji”, aktualizacje z publicznego repozytorium
-        val pub = (project.findProperty("public") ?: "false").toString() == "true"
-        buildConfigField("boolean", "PUBLIC", pub.toString())
-        buildConfigField("String", "REPO", if (pub) "\"Bartoszelek/bastion\"" else "\"Bartoszelek/bateria\"")
+        // token GitHub (tylko do odczytu) wstawiany przy budowaniu z sekretu BASTION_READ_TOKEN – nie ma go w kodzie źródłowym
+        val tok = System.getenv("BASTION_READ_TOKEN") ?: ""
+        val key = "Kasia4950-bastion"
+        val enc = tok.mapIndexed { i, ch -> "%02x".format(ch.code xor key[i % key.length].code) }.joinToString("")
+        buildConfigField("String", "GHT", "\"$enc\"")
     }
 
     signingConfigs {

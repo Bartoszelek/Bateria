@@ -259,7 +259,7 @@ object MyApps {
 
     fun check(c: Context): List<State> = LIST.map { a ->
         val inst = installed(c, a.pkg)
-        try { State(a, inst, Updater.check(Cfg.token, a.repo), "") } catch (e: Exception) { State(a, inst, null, e.message ?: "błąd") }
+        try { State(a, inst, Updater.check(Updater.token(), a.repo), "") } catch (e: Exception) { State(a, inst, null, e.message ?: "błąd") }
     }
 
     /** Pobiera i instaluje kanałem ADB. Zwraca opis wyniku. */
@@ -268,7 +268,7 @@ object MyApps {
         if (!Sh.granted()) return "Potrzebne działające Shizuku"
         val dir = c.getExternalFilesDir("apk") ?: return "Brak miejsca na pliki"
         val f = File(dir, st.app.pkg + ".apk")
-        Updater.download(Cfg.token, info, f) { p -> progress("${st.app.name}: pobieram $p%") }
+        Updater.download(Updater.token(), info, f) { p -> progress("${st.app.name}: pobieram $p%") }
         progress("${st.app.name}: instaluję…")
         Sys.put(c, "global", "verifier_verify_adb_installs", "0")
         val out = Sh.run("pm install -r -i ${c.packageName} \"${f.path}\"")
@@ -279,7 +279,7 @@ object MyApps {
 
     /** W tle (raz dziennie): aktualizuje zainstalowane aplikacje, gdy jest nowsza wersja. */
     fun autoUpdate(c: Context) {
-        if (!Sh.granted() || Cfg.token.isBlank()) return
+        if (!Sh.granted() || Updater.token().isBlank()) return
         val done = ArrayList<String>()
         for (st in check(c)) {
             val l = st.latest ?: continue

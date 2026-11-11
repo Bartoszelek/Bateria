@@ -477,13 +477,13 @@ class MainActivity : Activity() {
         col.addView(bk, lp(top = 6))
         col.addView(tv("Kategorie aplikacji, blokady internetu, listy domen i wszystkie przełączniki – do przeniesienia na inny telefon.", 12f, color = DIM), lp(top = 6))
 
-        if (!BuildConfig.PUBLIC) {
+        if (admin) {
         header("Moje aplikacje")
         col.addView(tv("Instalacja i aktualizacje wszystkich Twoich aplikacji kanałem ADB (Shizuku): bez okna instalatora i bez ostrzeżeń Play Protect. Tę drogę Google zostawia otwartą także po zaostrzeniu zasad instalowania.", 12f, color = DIM), lp(top = 2))
         val ms = mine
         if (ms == null) {
             col.addView(btn("Sprawdź moje aplikacje", true) {
-                if (Cfg.token.isBlank()) { toast("Najpierw wklej token GitHub niżej"); return@btn }
+                if (Updater.token().isBlank()) { toast("Brak tokenu GitHub"); return@btn }
                 work("Sprawdzam…") { mine = MyApps.check(this); null }
             }, lp(-2, -2, top = 8))
         } else {
@@ -523,34 +523,97 @@ class MainActivity : Activity() {
         vr.addView(tv(versionName(), 16f, true))
         ver.addView(vr)
         col.addView(ver)
-        if (Cfg.token.isBlank() && !BuildConfig.PUBLIC) {
-            col.addView(tv("Wklej token GitHub (ten sam co w Termuksie). Bastion będzie sam sprawdzać i instalować nowe wersje.", 13f, color = DIM), lp(top = 8))
+        val st = tv(updMsg, 14f, color = DIM)
+        updStatus = st
+        if (updMsg.isNotEmpty()) col.addView(st, lp(top = 6))
+        val u2 = update
+        if (u2 != null) col.addView(btn("Pobierz i zainstaluj 1.${u2.number}", true) { installUpdate() }, lp(-2, -2, top = 8))
+        else col.addView(btn("Sprawdź aktualizacje") { checkUpdate(true) }, lp(-2, -2, top = 8))
+        col.addView(tv("Bastion sam sprawdza nowe wersje raz dziennie i przy każdym uruchomieniu.", 12f, color = DIM), lp(top = 8))
+
+        // ---- administrator (hasło): token, GitHub, wszystkie wersje
+        if (!admin) {
+            col.addView(btn("🔒 Administrator") { adminLogin() }, lp(-2, -2, top = 14))
+        } else {
+            header("Administrator")
+            val tr = hbox()
+            val tok = Updater.token()
+            val tt = tv(if (tok.isBlank()) "brak tokenu" else tok.take(4) + "••••••••" + tok.takeLast(4), 15f).apply { typeface = android.graphics.Typeface.MONOSPACE }
+            tr.addView(tt, lp(0, -2, 1f))
+            tr.addView(btn("Pokaż") { tt.text = tok.ifBlank { "brak tokenu" } }, lp(-2, -2).apply { rightMargin = dp(6) })
+            tr.addView(btn("Kopiuj") { getSystemService(android.content.ClipboardManager::class.java)?.setPrimaryClip(android.content.ClipData.newPlainText("token", tok)); toast("Skopiowano") })
+            col.addView(tr, lp(top = 6))
+            col.addView(tv(if (Cfg.token.isBlank()) "Token wbudowany przy budowaniu" else "Token wpisany ręcznie (ma pierwszeństwo przed wbudowanym)", 12f, color = DIM), lp(top = 2))
             val e = EditText(this).apply {
-                hint = "ghp_…"; setTextColor(FG); setHintTextColor(DIM); textSize = 15f; setSingleLine()
+                hint = "Inny token (ghp_… / github_pat_…)"; setTextColor(FG); setHintTextColor(DIM); textSize = 14f; setSingleLine()
                 inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
                 background = round(SURF, 14); setPadding(dp(12), dp(10), dp(12), dp(10))
             }
             col.addView(e, lp(top = 8))
-            col.addView(btn("Zapisz token") { Cfg.token = e.text.toString().trim(); Cfg.save(); checkUpdate(true) }, lp(-2, -2, top = 8))
-        } else {
-            if (!BuildConfig.PUBLIC) {
-                val tr = hbox()
-                tr.addView(tv("Token GitHub zapisany", 16f), lp(0, -2, 1f))
-                tr.addView(btn("Usuń") { Cfg.token = ""; Cfg.save(); update = null; updMsg = ""; render() })
-                col.addView(tr, lp(top = 6))
-            }
-            val st = tv(updMsg, 14f, color = DIM)
-            updStatus = st
-            if (updMsg.isNotEmpty()) col.addView(st, lp(top = 6))
-            val u2 = update
-            if (u2 != null) col.addView(btn("Pobierz i zainstaluj 1.${u2.number}", true) { installUpdate() }, lp(-2, -2, top = 8))
-            else col.addView(btn("Sprawdź aktualizacje") { checkUpdate(true) }, lp(-2, -2, top = 8))
+            val er = hbox()
+            er.addView(btn("Zapisz token") { Cfg.token = e.text.toString().trim(); Cfg.save(); checkUpdate(true) }, lp(-2, -2).apply { rightMargin = dp(6) })
+            if (Cfg.token.isNotBlank()) er.addView(btn("Wróć do wbudowanego") { Cfg.token = ""; Cfg.save(); render() })
+            col.addView(er, lp(top = 6))
+            col.addView(btn("Wszystkie wersje") { versionsSheet() }, lp(-2, -2, top = 10))
+            col.addView(btn("Otwórz GitHub") { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/${Updater.REPO}/actions"))) }, lp(-2, -2, top = 8))
+            col.addView(btn("Udostępnij plik Bastiona (np. rodzinie)") { shareSelf() }, lp(-2, -2, top = 8))
+            col.addView(btn("Wyloguj administratora") { admin = false; render() }, lp(-2, -2, top = 8))
         }
-        col.addView(btn(if (BuildConfig.PUBLIC) "Strona Bastionu na GitHubie" else "Otwórz budowanie na GitHubie") {
-            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/${Updater.REPO}/" + if (BuildConfig.PUBLIC) "releases" else "actions")))
-        }, lp(-2, -2, top = 8))
-        col.addView(tv("Gdy działa Shizuku, aktualizacja instaluje się sama, bez okna instalatora i bez ostrzeżenia Google Play Protect.", 12f, color = DIM), lp(top = 8))
         col.addView(tv("Bastion ${versionName()}", 12f, color = DIM).apply { gravity = Gravity.CENTER }, lp(top = 18))
+    }
+
+    // ------------------------------------------------------------ administrator
+    private var admin = false
+    /** SHA-256 hasła – samo hasło nie jest zapisane w aplikacji. */
+    private val ADMIN_HASH = "18a5e70495f3dc9ffed55d11dd6f54483e1313f40353fbb164ce0a661d0e2395"
+
+    private fun sha(t: String) = java.security.MessageDigest.getInstance("SHA-256").digest(t.toByteArray()).joinToString("") { "%02x".format(it) }
+
+    private fun adminLogin() {
+        val e = EditText(this).apply {
+            hint = "Hasło"; setTextColor(FG); setHintTextColor(DIM); setSingleLine()
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        android.app.AlertDialog.Builder(this).setTitle("Administrator").setView(android.widget.FrameLayout(this).apply { setPadding(dp(20), dp(8), dp(20), 0); addView(e) })
+            .setPositiveButton("Wejdź") { _, _ ->
+                if (sha(e.text.toString()) == ADMIN_HASH) { admin = true; render() } else toast("Złe hasło")
+            }.setNegativeButton("Anuluj", null).show()
+    }
+
+    /** Lista wszystkich wydanych wersji – instalacja dowolnej (także starszej). */
+    private fun versionsSheet() {
+        toast("Pobieram listę wersji…")
+        Thread {
+            val l = try { Updater.all(Updater.token()) } catch (e: Exception) { h.post { toast("Błąd: ${e.message}") }; return@Thread }
+            h.post {
+                val cur = installedVersion()
+                val names = l.map { "1.${it.number}  ·  ${it.title}" + if (it.number.toLong() == cur) "  (zainstalowana)" else "" }.toTypedArray()
+                android.app.AlertDialog.Builder(this).setTitle("Wersje Bastiona").setItems(names) { _, w ->
+                    update = l[w]; installUpdate(l[w].number.toLong() < cur)
+                }.setNegativeButton("Zamknij", null).show()
+            }
+        }.start()
+    }
+
+    /** Udostępnia zainstalowany plik APK (np. przez WhatsApp) – rodzina instaluje, potem aktualizuje się sam. */
+    private fun shareSelf() {
+        try {
+            val src = java.io.File(applicationInfo.sourceDir)
+            val dst = java.io.File(cacheDir, "share/Bastion-${versionName()}.apk").apply { parentFile?.mkdirs() }
+            src.copyTo(dst, true)
+            val uri = androidx.core.content.FileProvider.getUriForFile(this, "$packageName.files", dst)
+            startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("application/vnd.android.package-archive")
+                .putExtra(Intent.EXTRA_STREAM, uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), "Udostępnij Bastion"))
+        } catch (e: Exception) { toast("Nie udało się: ${e.message}") }
+    }
+
+    /** Propozycja aktualizacji po każdym uruchomieniu aplikacji. */
+    private fun offerUpdate(i: Updater.Info) {
+        if (isFinishing) return
+        android.app.AlertDialog.Builder(this).setTitle("Nowa wersja Bastiona")
+            .setMessage("Dostępna jest wersja 1.${i.number} (masz ${versionName()}). Zaktualizować teraz?")
+            .setPositiveButton("Aktualizuj") { _, _ -> update = i; installUpdate() }
+            .setNegativeButton("Później", null).show()
     }
 
     // ------------------------------------------------------------ aktualizacje (jak w Kartach i Audiotece)
@@ -559,8 +622,8 @@ class MainActivity : Activity() {
     private fun versionName(): String = try { packageManager.getPackageInfo(packageName, 0).versionName ?: "?" } catch (e: Exception) { "?" }
 
     private fun checkUpdate(manual: Boolean) {
-        val token = Cfg.token
-        if (token.isBlank() && !BuildConfig.PUBLIC) { if (manual) toast("Najpierw wklej token GitHub"); return }
+        val token = Updater.token()
+        if (token.isBlank()) { if (manual) toast("Brak tokenu – wejdź jako administrator"); return }
         if (manual) { updMsg = "Sprawdzam…"; render() }
         Thread {
             val res: Pair<Updater.Info?, String> = try {
@@ -572,11 +635,13 @@ class MainActivity : Activity() {
             h.post {
                 update = res.first
                 if (manual || res.first != null) { updMsg = res.second; render() }
+                // przy uruchomieniu: od razu zaproponuj aktualizację
+                if (!manual && res.first != null) offerUpdate(res.first!!)
             }
         }.start()
     }
 
-    private fun installUpdate() {
+    private fun installUpdate(downgrade: Boolean = false) {
         val info = update ?: return
         if (!Sh.granted() && !packageManager.canRequestPackageInstalls()) {
             toast("Zezwól Bastionowi na instalowanie aplikacji, potem wróć i stuknij ponownie")
@@ -590,11 +655,11 @@ class MainActivity : Activity() {
         val file = java.io.File(if (shell) (getExternalFilesDir(null) ?: cacheDir) else cacheDir, "update.apk")
         Thread {
             try {
-                Updater.download(Cfg.token, info, file) { pr -> h.post { updMsg = "Pobieram… $pr%"; updStatus?.text = updMsg } }
+                Updater.download(Updater.token(), info, file) { pr -> h.post { updMsg = "Pobieram… $pr%"; updStatus?.text = updMsg } }
                 if (shell) {
                     h.post { updMsg = "Instaluję…"; updStatus?.text = updMsg }
                     Sys.put(this, "global", "verifier_verify_adb_installs", "0")
-                    val out = Sh.run("pm install -r \"${file.path}\"")
+                    val out = Sh.run("pm install -r ${if (downgrade) "-d " else ""}\"${file.path}\"")
                     if (!out.contains("Success")) {
                         // kanał ADB zawiódł – zwykły instalator
                         installApk(file)

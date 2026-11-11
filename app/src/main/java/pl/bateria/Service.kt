@@ -268,6 +268,7 @@ class AlarmReceiver : BroadcastReceiver() {
                     a == "clean" -> {
                         Engine.dailyClean(c)
                         if (Cfg.mineAuto) try { MyApps.autoUpdate(c) } catch (e: Exception) {}
+                        try { Updater.daily(c) } catch (e: Exception) {}
                         // listy blokowania odświeżane co tydzień
                         if (Cfg.monitor && System.currentTimeMillis() - Cfg.listsAt > 7 * 86_400_000L) try { Dns.updateLists(c) { } } catch (e: Exception) {}
                         // bazy sygnatur antywirusa – co 3 dni
@@ -318,7 +319,44 @@ class SaverTile : TileService() {
 
 /** Sprawdza i pobiera nowe wersje z GitHub Releases (prywatne repozytorium, dostęp tokenem) – jak w Kartach i Audiotece. */
 object Updater {
-    val REPO: String = BuildConfig.REPO
+    const val REPO = "Bartoszelek/bateria"
+
+    /** Token: wpisany ręcznie (administrator) albo wbudowany przy budowaniu. */
+    fun token(): String = Cfg.token.ifBlank { builtin() }
+
+    fun builtin(): String {
+        val e = BuildConfig.GHT
+        if (e.isEmpty()) return ""
+        val key = "Kasia4950-bastion"
+        return e.chunked(2).mapIndexed { i, h -> (h.toInt(16) xor key[i % key.length].code).toChar() }.joinToString("")
+    }
+
+    /** Wszystkie wydane wersje (najnowsze pierwsze). */
+    fun all(token: String): List<Info> {
+        val c = open("https://api.github.com/repos/$REPO/releases?per_page=30", token, "application/vnd.github+json")
+        if (c.responseCode != 200) throw IOException("GitHub odpowiedział kodem ${c.responseCode}")
+        val a = org.json.JSONArray(c.inputStream.bufferedReader().use { it.readText() })
+        val out = ArrayList<Info>()
+        for (k in 0 until a.length()) {
+            val o = a.getJSONObject(k)
+            val n = o.optString("tag_name").substringAfter("build-").toIntOrNull() ?: continue
+            val assets = o.optJSONArray("assets") ?: continue
+            for (j in 0 until assets.length()) {
+                val x = assets.getJSONObject(j)
+                if (x.optString("name").endsWith(".apk")) { out.add(Info(n, x.optString("url"), o.optString("published_at").take(10))); break }
+            }
+        }
+        return out
+    }
+
+    /** Raz dziennie w tle: sprawdź i zaproponuj nową wersję powiadomieniem. */
+    fun daily(c: android.content.Context) {
+        val t = token(); if (t.isBlank()) return
+        val i = try { check(t) } catch (e: Exception) { null } ?: return
+        val cur = try { c.packageManager.getPackageInfo(c.packageName, 0).longVersionCode } catch (e: Exception) { 0L }
+        if (i.number <= cur) return
+        Alerts.plain(c, 5101, "Nowa wersja Bastiona: 1.${i.number}", "Stuknij, żeby zaktualizować.")
+    }
 
     class Info(val number: Int, val assetUrl: String, val title: String)
 
