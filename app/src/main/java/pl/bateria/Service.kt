@@ -318,7 +318,7 @@ class SaverTile : TileService() {
 
 /** Sprawdza i pobiera nowe wersje z GitHub Releases (prywatne repozytorium, dostęp tokenem) – jak w Kartach i Audiotece. */
 object Updater {
-    const val REPO = "Bartoszelek/bateria"
+    val REPO: String = BuildConfig.REPO
 
     class Info(val number: Int, val assetUrl: String, val title: String)
 
@@ -329,7 +329,7 @@ object Updater {
         c.instanceFollowRedirects = false
         if (!token.isNullOrBlank()) c.setRequestProperty("Authorization", "Bearer $token")
         c.setRequestProperty("Accept", accept)
-        c.setRequestProperty("User-Agent", "Bateria")
+        c.setRequestProperty("User-Agent", "Bastion")
         return c
     }
 

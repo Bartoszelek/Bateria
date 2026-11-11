@@ -15,6 +15,10 @@ android {
         targetSdk = 34
         versionCode = runNumber
         versionName = "1.$runNumber"
+        // wersja do udostępniania (-Ppublic=true): bez „Moich aplikacji”, aktualizacje z publicznego repozytorium
+        val pub = (project.findProperty("public") ?: "false").toString() == "true"
+        buildConfigField("boolean", "PUBLIC", pub.toString())
+        buildConfigField("String", "REPO", if (pub) "\"Bartoszelek/bastion\"" else "\"Bartoszelek/bateria\"")
     }
 
     signingConfigs {
@@ -38,6 +42,7 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+    buildFeatures { buildConfig = true }
     kotlinOptions { jvmTarget = "17" }
 }
 

@@ -477,6 +477,7 @@ class MainActivity : Activity() {
         col.addView(bk, lp(top = 6))
         col.addView(tv("Kategorie aplikacji, blokady internetu, listy domen i wszystkie przełączniki – do przeniesienia na inny telefon.", 12f, color = DIM), lp(top = 6))
 
+        if (!BuildConfig.PUBLIC) {
         header("Moje aplikacje")
         col.addView(tv("Instalacja i aktualizacje wszystkich Twoich aplikacji kanałem ADB (Shizuku): bez okna instalatora i bez ostrzeżeń Play Protect. Tę drogę Google zostawia otwartą także po zaostrzeniu zasad instalowania.", 12f, color = DIM), lp(top = 2))
         val ms = mine
@@ -513,6 +514,8 @@ class MainActivity : Activity() {
         }
         toggle("Aktualizuj moje aplikacje automatycznie", "Raz dziennie w tle, gdy działa Shizuku – z powiadomieniem, co zostało zaktualizowane.", Cfg.mineAuto) { Cfg.mineAuto = it; Cfg.save() }
 
+        }
+
         header("Aktualizacje")
         val ver = vbox().apply { setPadding(0, dp(10), 0, dp(4)) }
         val vr = hbox()
@@ -520,7 +523,7 @@ class MainActivity : Activity() {
         vr.addView(tv(versionName(), 16f, true))
         ver.addView(vr)
         col.addView(ver)
-        if (Cfg.token.isBlank()) {
+        if (Cfg.token.isBlank() && !BuildConfig.PUBLIC) {
             col.addView(tv("Wklej token GitHub (ten sam co w Termuksie). Bastion będzie sam sprawdzać i instalować nowe wersje.", 13f, color = DIM), lp(top = 8))
             val e = EditText(this).apply {
                 hint = "ghp_…"; setTextColor(FG); setHintTextColor(DIM); textSize = 15f; setSingleLine()
@@ -530,10 +533,12 @@ class MainActivity : Activity() {
             col.addView(e, lp(top = 8))
             col.addView(btn("Zapisz token") { Cfg.token = e.text.toString().trim(); Cfg.save(); checkUpdate(true) }, lp(-2, -2, top = 8))
         } else {
-            val tr = hbox()
-            tr.addView(tv("Token GitHub zapisany", 16f), lp(0, -2, 1f))
-            tr.addView(btn("Usuń") { Cfg.token = ""; Cfg.save(); update = null; updMsg = ""; render() })
-            col.addView(tr, lp(top = 6))
+            if (!BuildConfig.PUBLIC) {
+                val tr = hbox()
+                tr.addView(tv("Token GitHub zapisany", 16f), lp(0, -2, 1f))
+                tr.addView(btn("Usuń") { Cfg.token = ""; Cfg.save(); update = null; updMsg = ""; render() })
+                col.addView(tr, lp(top = 6))
+            }
             val st = tv(updMsg, 14f, color = DIM)
             updStatus = st
             if (updMsg.isNotEmpty()) col.addView(st, lp(top = 6))
@@ -541,7 +546,9 @@ class MainActivity : Activity() {
             if (u2 != null) col.addView(btn("Pobierz i zainstaluj 1.${u2.number}", true) { installUpdate() }, lp(-2, -2, top = 8))
             else col.addView(btn("Sprawdź aktualizacje") { checkUpdate(true) }, lp(-2, -2, top = 8))
         }
-        col.addView(btn("Otwórz budowanie na GitHubie") { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/${Updater.REPO}/actions"))) }, lp(-2, -2, top = 8))
+        col.addView(btn(if (BuildConfig.PUBLIC) "Strona Bastionu na GitHubie" else "Otwórz budowanie na GitHubie") {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/${Updater.REPO}/" + if (BuildConfig.PUBLIC) "releases" else "actions")))
+        }, lp(-2, -2, top = 8))
         col.addView(tv("Gdy działa Shizuku, aktualizacja instaluje się sama, bez okna instalatora i bez ostrzeżenia Google Play Protect.", 12f, color = DIM), lp(top = 8))
         col.addView(tv("Bastion ${versionName()}", 12f, color = DIM).apply { gravity = Gravity.CENTER }, lp(top = 18))
     }
@@ -553,7 +560,7 @@ class MainActivity : Activity() {
 
     private fun checkUpdate(manual: Boolean) {
         val token = Cfg.token
-        if (token.isBlank()) { if (manual) toast("Najpierw wklej token GitHub"); return }
+        if (token.isBlank() && !BuildConfig.PUBLIC) { if (manual) toast("Najpierw wklej token GitHub"); return }
         if (manual) { updMsg = "Sprawdzam…"; render() }
         Thread {
             val res: Pair<Updater.Info?, String> = try {

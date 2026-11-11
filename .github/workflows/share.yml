@@ -1,0 +1,62 @@
+name: Udostępnij Bastion
+
+# Uruchamiasz ręcznie: Actions → „Udostępnij Bastion” → Run workflow.
+# Buduje wersję do udostępniania (bez Twoich prywatnych aplikacji i tokenów)
+# i publikuje ją w PUBLICZNYM repozytorium Bartoszelek/bastion jako Bastion.apk.
+on:
+  workflow_dispatch:
+    inputs:
+      notes:
+        description: "Co nowego (opcjonalnie)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  share:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.10.2
+      - name: Zbuduj wersję publiczną (release)
+        run: gradle assembleRelease -Ppublic=true || (sleep 30 && gradle assembleRelease -Ppublic=true --refresh-dependencies)
+      - name: Przygotuj plik
+        run: |
+          cp app/build/outputs/apk/release/app-release.apk Bastion.apk
+          sha256sum Bastion.apk | cut -d' ' -f1 > Bastion.apk.sha256
+          echo "SHA=$(cat Bastion.apk.sha256)" >> $GITHUB_ENV
+      - name: Opublikuj w publicznym repozytorium
+        uses: softprops/action-gh-release@v2
+        with:
+          repository: Bartoszelek/bastion
+          token: ${{ secrets.BASTION_PUBLIC_TOKEN }}
+          tag_name: build-${{ github.run_number }}
+          name: Bastion 1.${{ github.run_number }}
+          make_latest: true
+          files: |
+            Bastion.apk
+            Bastion.apk.sha256
+          body: |
+            ## Bastion 1.${{ github.run_number }}
+
+            Bateria, pamięć, prywatność i bezpieczeństwo w jednej aplikacji – wszystko działa w telefonie, bez chmury i bez kont.
+
+            ${{ github.event.inputs.notes }}
+
+            **Pobierz:** [Bastion.apk](https://github.com/Bartoszelek/bastion/releases/latest/download/Bastion.apk)
+
+            **Wymagania:** Android 10 lub nowszy. Większość funkcji (zamrażanie aplikacji, uprawnienia, statystyki baterii, blokada internetu w tle) wymaga aplikacji **Shizuku** – Bastion przeprowadzi przez jej włączenie.
+
+            **Instalacja:** otwórz pobrany plik i zezwól przeglądarce na instalowanie aplikacji. Google Play Protect może ostrzec, bo aplikacja nie pochodzi ze Sklepu Play i korzysta z szerokich uprawnień – wybierz „Więcej szczegółów → Zainstaluj mimo to”.
+
+            **Aktualizacje:** Bastion sam sprawdza nowe wersje (Bateria → Aktualizacje).
+
+            Suma kontrolna SHA-256: `${{ env.SHA }}`
